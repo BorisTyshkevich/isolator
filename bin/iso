@@ -9,17 +9,17 @@ Usage:
     iso pf                            Apply firewall rules from config
     iso pf --dry-run                  Print firewall rules without loading
     iso list                          List configured users
-    iso <user> <command> [args...]    Run command as isolated user
+    iso <user> [command] [args...]     Run command as isolated user (default: bash)
 
 Options for create:
     --from USER                       Copy config from USER (default: admin)
-    --token TOKEN                     Inject CLAUDE_CODE_OAUTH_TOKEN
-    --keychain-pass PASS              Copy admin keychain credentials
+    --token TOKEN                     Write token to .credentials.json (plaintext)
+    --keychain                        Copy admin keychain credentials (encrypted)
 
 Examples:
-    iso create acm --keychain-pass ttt
+    iso create acm --keychain
     iso acm claude
-    iso acm bash
+    iso acm
     iso acm codex --model o3
     iso delete acm
     iso pf
@@ -65,6 +65,7 @@ SHARED_TOOLS = [
 
 KEYCHAIN_PASS_VAR = "ISOLATOR_KEYCHAIN_PASS"
 KEYCHAIN_NAME = "login.keychain-db"
+KEYCHAIN_PASS_DIR = Path("/etc/isolator/keychain")
 
 # Extra flags injected when running these commands via `iso <user> <cmd>`
 COMMAND_FLAGS = {
@@ -354,25 +355,65 @@ def ensure_shared_tool_access():
 
 # ── Auth ────────────────────────────────────────────────────────────────────
 
-def inject_auth_env(name):
+def inject_auth_token(name):
+    """Mode: --token → write .credentials.json (plaintext, no keychain)."""
     token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
     if not token:
         return False
     home = Path(f"/Users/{name}")
-    env_file = home / ".env"
-    env_file.write_text(f'# Isolator auth\nexport CLAUDE_CODE_OAUTH_TOKEN="{token}"\n')
-    print(f"  Injected CLAUDE_CODE_OAUTH_TOKEN into .env")
+    claude_dir = home / ".claude"
+    claude_dir.mkdir(exist_ok=True)
+    creds_file = claude_dir / ".credentials.json"
+    # Claude Code expects the OAuth wrapper format
+    creds = json.dumps({"claudeAiOauth": {"accessToken": token}})
+    creds_file.write_text(creds + "\n")
+    print(f"  Wrote OAuth token to .credentials.json")
+    return True
+
+
+def generate_keychain_pass():
+    """Generate a secure random password for the keychain."""
+    import secrets
+    return secrets.token_urlsafe(32)
+
+
+def save_keychain_pass(name, kc_pass):
+    """Store keychain password in root-only file."""
+    KEYCHAIN_PASS_DIR.mkdir(parents=True, exist_ok=True)
+    pass_file = KEYCHAIN_PASS_DIR / name
+    pass_file.write_text(kc_pass)
+    run(["chown", "root:wheel", str(pass_file)])
+    run(["chmod", "400", str(pass_file)])
+
+
+def read_keychain_pass(name):
+    """Read keychain password from root-only file. Returns None if not found."""
+    pass_file = KEYCHAIN_PASS_DIR / name
+    if pass_file.exists():
+        return pass_file.read_text().strip()
+    return None
+
+
+def unlock_keychain(name):
+    """Unlock a user's keychain using the stored password. Must be root."""
+    kc_pass = read_keychain_pass(name)
+    if not kc_pass:
+        return False
+    kc_file = Path(f"/Users/{name}/Library/Keychains/{KEYCHAIN_NAME}")
+    if not kc_file.exists():
+        return False
+    run(["security", "unlock-keychain", "-p", kc_pass, str(kc_file)], check=False)
     return True
 
 
 def inject_auth_keychain(name):
-    kc_pass = os.environ.get(KEYCHAIN_PASS_VAR)
-    if not kc_pass:
+    if KEYCHAIN_PASS_VAR not in os.environ:
         return False
     home = Path(f"/Users/{name}")
     kc_dir = home / "Library" / "Keychains"
     kc_file = kc_dir / KEYCHAIN_NAME
 
+    # Read credential from admin's keychain
     r = run(["security", "find-generic-password",
              "-s", "Claude Code-credentials", "-w"], check=False)
     if r.returncode != 0:
@@ -380,6 +421,11 @@ def inject_auth_keychain(name):
         return False
     cred_value = r.stdout.strip()
 
+    # Generate and store secure password (root-only)
+    kc_pass = generate_keychain_pass()
+    save_keychain_pass(name, kc_pass)
+
+    # Create user's keychain
     kc_dir.mkdir(parents=True, exist_ok=True)
     run(["chown", "-R", f"{name}:staff", str(home / "Library")])
     if kc_file.exists():
@@ -393,41 +439,23 @@ def inject_auth_keychain(name):
          "-s", "Claude Code-credentials", "-a", "Claude Code",
          "-w", cred_value, "-T", "", str(kc_file)])
 
-    # Write .credentials.json so Claude Code uses fresh token
-    claude_dir = home / ".claude"
-    claude_dir.mkdir(exist_ok=True)
-    creds_file = claude_dir / ".credentials.json"
-    creds_file.write_text(cred_value + "\n")
+    # Remove stale .credentials.json and .env if present
+    for stale in [home / ".claude" / ".credentials.json", home / ".env"]:
+        if stale.exists():
+            stale.unlink()
+            print(f"  Removed stale {stale}")
 
-    # Replace .env: store keychain password for profile unlock
-    env_file = home / ".env"
-    env_file.write_text(f'# Isolator auth (keychain)\nexport ISOLATOR_KEYCHAIN_PASS="{kc_pass}"\n')
-
-    print(f"  Copied Claude Code credentials to {name}'s keychain")
+    print(f"  Copied Claude Code credentials to {name}'s keychain (password stored in {KEYCHAIN_PASS_DIR}/{name})")
     return True
 
 
 def inject_auth(name, user_config):
-    if inject_auth_env(name):
+    """Inject auth. Tries token first, then keychain."""
+    if inject_auth_token(name):
         return
     if inject_auth_keychain(name):
         return
-    home = Path(f"/Users/{name}")
-    auth = user_config.get("auth", {})
-    if not auth:
-        print(f"  No auth: set CLAUDE_CODE_OAUTH_TOKEN or {KEYCHAIN_PASS_VAR} in your env")
-        return
-    env_file = home / ".env"
-    lines = ["# Isolator auth"]
-    for var, keyfile in auth.items():
-        keypath = Path(keyfile)
-        if not keypath.exists():
-            print(f"  WARNING: key file {keypath} not found, skipping {var}")
-            continue
-        value = keypath.read_text().strip()
-        lines.append(f'export {var}="{value}"')
-        print(f"  Injecting {var} from {keypath}")
-    env_file.write_text("\n".join(lines) + "\n")
+    print(f"  No auth: pass --token or --keychain-pass")
 
 
 # ── Ownership ───────────────────────────────────────────────────────────────
@@ -442,7 +470,7 @@ def set_ownership(name):
     home = Path(f"/Users/{name}")
 
     for f in [".bash_profile", ".bashrc", ".zprofile", ".zshrc",
-              ".env", ".claude/settings.json",
+              ".claude/settings.json",
               ".claude.json", ".codex/config.toml", ".codex/AGENTS.md"]:
         path = home / f
         if path.exists():
@@ -645,6 +673,18 @@ def cmd_pf(config, dry_run=False):
 
 def cmd_run(user, command, args):
     """Run a command as an isolated user via sudo."""
+    # Unlock keychain before launching (reads root-only password file via sudo)
+    kc_file = Path(f"/Users/{user}/Library/Keychains/{KEYCHAIN_NAME}")
+    pass_file = KEYCHAIN_PASS_DIR / user
+    if kc_file.exists() and pass_file.exists():
+        # sudo cat to read root-only file, then unlock
+        r = subprocess.run(["sudo", "cat", str(pass_file)],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            kc_pass = r.stdout.strip()
+            subprocess.run(
+                ["sudo", "security", "unlock-keychain", "-p", kc_pass, str(kc_file)],
+                capture_output=True)
     extra = COMMAND_FLAGS.get(command, [])
     os.execvp("sudo", ["sudo", "-u", user, "-i", command] + extra + args)
 
@@ -677,8 +717,8 @@ def parse_create_args(args):
         arg = args.pop(0)
         if arg == "--token":
             os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = args.pop(0)
-        elif arg == "--keychain-pass":
-            os.environ[KEYCHAIN_PASS_VAR] = args.pop(0)
+        elif arg in ("--keychain", "--keychain-pass"):
+            os.environ[KEYCHAIN_PASS_VAR] = "1"
         elif arg == "--from":
             from_user = args.pop(0)
         elif arg == "--all":

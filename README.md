@@ -41,8 +41,8 @@ sudo chmod 644 /etc/isolator/config.toml /etc/isolator/profile
 sudo cp bin/iso /usr/local/bin/iso
 
 # 4. Create users (auto-added to config.toml if not present)
-iso create acm --keychain-pass ttt
-iso create click --keychain-pass ttt
+iso create acm --keychain
+iso create click --keychain
 
 # 5. Load firewall rules (optional)
 iso pf
@@ -64,13 +64,11 @@ iso delete --all                  # Delete all users from config
 iso pf                            # Apply firewall rules
 iso pf --dry-run                  # Print rules without loading
 iso list                          # List configured users
-iso <user> <command> [args...]    # Run command as isolated user
+iso <user> [command] [args...]    # Run command as isolated user (default: bash)
 ```
 
-When running `claude` or `codex`, `iso` automatically injects bypass flags:
-
-- `iso acm claude` runs `claude --permission-mode bypassPermissions`
-- `iso acm codex` runs `codex --dangerously-bypass-approvals-and-sandbox`
+When running `claude`, `iso` automatically injects `--permission-mode bypassPermissions`.
+Codex bypass is configured via `config.toml` (`approval_policy = "never"`).
 
 Any other command passes through unchanged: `iso acm bash`, `iso acm npm install`, etc.
 
@@ -78,10 +76,10 @@ Any other command passes through unchanged: `iso acm bash`, `iso acm npm install
 
 ```bash
 iso create acm                              # create (no auth)
-iso create acm --keychain-pass ttt          # with keychain auth
-iso create acm --token sk-ant-oat01-...     # with token auth
+iso create acm --keychain                   # with keychain auth (encrypted)
+iso create acm --token sk-ant-oat01-...     # with token auth (plaintext)
 iso create acm --from click                 # copy config from another user
-iso create --all --keychain-pass ttt        # create all from config
+iso create --all --keychain                 # create all from config
 ```
 
 If the user doesn't exist in `config.toml`, it's auto-added with the next available UID.
@@ -94,13 +92,13 @@ If the user doesn't exist in `config.toml`, it's auto-added with the next availa
 ```bash
 iso create acm
 ```
-Re-copies shell config, Claude settings, Codex config, and plugins from the source user. Useful after changing your `.bashrc`, Claude plugins, MCP servers, etc. Does not touch auth — existing keychain and `.env` stay as-is.
+Re-copies shell config, Claude settings, Codex config, and plugins from the source user. Useful after changing your `.bashrc`, Claude plugins, MCP servers, etc. Does not touch auth — existing keychain stays as-is.
 
 **Refresh config + auth** (also re-copies credentials):
 ```bash
-iso create acm --keychain-pass ttt
+iso create acm --keychain
 ```
-Same as above, plus re-copies your current OAuth credentials from keychain. Use after token rotation or when the agent gets 401 errors.
+Same as above, plus re-copies your current OAuth credentials from keychain with a new secure password. Use after token rotation or when the agent gets 401 errors.
 
 ### What `create` does
 
@@ -118,18 +116,20 @@ Two auth modes, both passed at create time.
 
 ### Mode 1: Keychain (recommended)
 
-Copies Claude Code OAuth credentials from your macOS Keychain into a new keychain for the isolated user. The profile auto-unlocks it on login.
+Copies Claude Code OAuth credentials from your macOS Keychain into a new encrypted keychain for the isolated user.
 
 ```bash
-iso create acm --keychain-pass ttt
+iso create acm --keychain
 ```
 
 How it works:
 1. Reads `Claude Code-credentials` from your keychain
-2. Creates a login keychain for the user with the given password
-3. Stores the credential there
-4. Writes `.credentials.json` so Claude Code uses the fresh token
-5. On login, the isolator profile runs `security unlock-keychain` automatically
+2. Generates a secure random password (stored in `/etc/isolator/keychain/<user>`, root-only mode 400)
+3. Creates a login keychain for the user with that password
+4. Stores the credential there
+5. On `iso acm claude`, the `iso` script reads the root-only password and unlocks the keychain before launching
+
+The agent never sees the keychain password. Credentials are encrypted at rest. The `iso` script (via sudo) is the only thing that can unlock the keychain.
 
 ### Mode 2: OAuth token
 
@@ -142,21 +142,18 @@ claude setup-token
 iso create acm --token sk-ant-oat01-...
 ```
 
+Writes the token to `~/.claude/.credentials.json` (plaintext). Simpler but less secure — the agent can read the raw token from disk.
+
 ### Mode comparison
 
 | | Keychain | Token |
 |---|---|---|
-| Credentials stored in | macOS Keychain (encrypted) | `~/.env` (plaintext) |
+| Credentials stored in | macOS Keychain (encrypted) | `.credentials.json` (plaintext) |
+| Password stored in | `/etc/isolator/keychain/` (root 400) | N/A |
 | Survives token refresh | Yes (Claude updates keychain) | No (need new token) |
-| Agent can read secret | Via keychain API only | Can `cat ~/.env` |
+| Agent can read raw token | Only while keychain is unlocked | Always |
+| Encrypted at rest | Yes | No |
 | Setup | One command | `claude setup-token` first |
-
-### Auth via environment variables
-
-```bash
-CLAUDE_CODE_OAUTH_TOKEN=sk-ant-... iso create acm
-ISOLATOR_KEYCHAIN_PASS=ttt         iso create acm
-```
 
 ### Codex
 
