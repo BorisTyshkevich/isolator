@@ -586,9 +586,6 @@ section.lead p {
   terraform                 infrastructure
   gcc, make, cmake          compilers
 </code></pre>
-<p>In Docker, you <strong>rebuild the image</strong> for every tool change.</p>
-<p>With macOS users: <strong>install once as admin, available to all agents instantly.</strong><br />
-Upgrade <code>claude</code> or <code>codex</code> in your account -- all sandboxed agents get it.</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="7" data-paginate="true" data-background-color="#ffffff" data-color="#1d1d1f" data-theme="default" data-style="section {
   font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
@@ -803,18 +800,18 @@ section.lead p {
  |
  |-- iso acm claude                 # ACM project
  |-- iso click codex                # ClickHouse project
- |-- iso tools claude               # shared tooling
+ |-- iso mcp claude                 # mcp project
  |
  +-- acm    uid=600  /Users/acm/    chmod 700
  +-- click  uid=601  /Users/click/  chmod 700
- +-- tools  uid=602  /Users/tools/  chmod 700
+ +-- mcp  uid=602  /Users/tools/  chmod 700
 </code></pre>
-<p>Each user:</p>
+<p>Each sandbox user:</p>
 <ul>
-<li>Can't read your home or other slots</li>
+<li>Can't read your home or others</li>
 <li>Can't access network except whitelisted hosts</li>
 <li>Can read <code>/opt/homebrew</code>, <code>/usr/local</code> (shared tools)</li>
-<li>Has its own API keys, config, MCP servers</li>
+<li>Has its own API keys, config, MCP servers, python libraries</li>
 </ul>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="9" data-paginate="true" data-background-color="#ffffff" data-color="#1d1d1f" data-theme="default" data-style="section {
@@ -905,14 +902,13 @@ section.lead p {
 }
 ;color:#1d1d1f;background-color:#ffffff;background-image:none;" data-marpit-pagination-total="18">
 <h2 id="isolator-one-script-one-config">Isolator: One Script, One Config</h2>
-<p><strong><code>iso create &lt;name&gt;</code></strong> -- creates a macOS user with:</p>
+<p><strong><code>iso create &lt;name&gt;</code></strong> -- creates a macOS user by copying your:</p>
 <ul>
-<li>Your shell config (<code>.bashrc</code>, <code>.bash_profile</code>)</li>
-<li>Your Claude/Codex config (settings, MCP servers, plugins)</li>
-<li>Auth from keychain or OAuth token</li>
-<li>ACL granting you read/write access to their home</li>
-<li>All config files owned by root (agent can't modify)</li>
+<li>shell config (<code>.bashrc</code>, <code>.bash_profile</code>)</li>
+<li>Claude/Codex config (settings, MCP servers, plugins)</li>
+<li>Claude/Codex auth (from keychain or API KEY)</li>
 </ul>
+<p>Also grants read/write access for <code>main</code> user to sandbox</p>
 <p><strong><code>iso pf</code></strong> -- generates per-user firewall rules:</p>
 <ul>
 <li>Resolves hostnames to IPs from config</li>
@@ -1022,7 +1018,7 @@ section.lead p {
 <span class="hljs-attr">uid</span> = <span class="hljs-number">601</span>
 <span class="hljs-attr">hosts</span> = [<span class="hljs-string">&quot;api.anthropic.com&quot;</span>, <span class="hljs-string">&quot;api.openai.com&quot;</span>]
 
-<span class="hljs-section">[users.tools]</span>
+<span class="hljs-section">[users.mcp]</span>
 <span class="hljs-attr">uid</span> = <span class="hljs-number">602</span>
 <span class="hljs-attr">hosts</span> = [<span class="hljs-string">&quot;api.anthropic.com&quot;</span>]
 </code></pre>
@@ -1117,8 +1113,7 @@ section.lead p {
 <h2 id="what-the-agent-sees">What the Agent Sees</h2>
 <pre is="marp-pre" data-auto-scaling="downscale-only"><code>/Users/acm/                         (chmod 700, own home)
   .bash_profile                     your shell config + isolator profile
-  .env                              keychain password (root-owned, read-only)
-  .claude/settings.json             your settings + bypassPermissions
+  .claude/settings.json             your settings 
   .local/bin/                       pip installs
   .npm-global/                      npm installs
   workspace/                        working directory
@@ -1580,30 +1575,16 @@ section.lead p {
 <pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-bash">docker-compose up -d    <span class="hljs-comment"># start ClickHouse, Postgres, Redis</span>
 npm <span class="hljs-built_in">test</span>                <span class="hljs-comment"># integration tests hit real services</span>
 </code></pre>
-<p><strong>The problem:</strong> Docker containers run inside a Linux VM, not as the sandboxed user.<br />
-macOS <code>pf</code> rules (by UID) don't apply. An agent can <code>docker run curl evil.com</code>.</p>
-<p><strong>Two-layer solution:</strong></p>
-<table>
-<thead>
-<tr>
-<th>Layer</th>
-<th>Where</th>
-<th>Restricts</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>macOS <code>pf</code></td>
-<td>Host kernel</td>
-<td>Host processes (by UID)</td>
-</tr>
-<tr>
-<td>Docker <code>iptables</code></td>
-<td>OrbStack VM</td>
-<td>Container traffic (by subnet)</td>
-</tr>
-</tbody>
-</table>
+<p><strong>The problem:</strong></p>
+<ul>
+<li>Docker containers run inside a Linux VM by <code>main</code> user</li>
+<li>macOS <code>pf</code> rules (by UID) don't apply. An agent can <code>docker run curl evil.com</code>.</li>
+</ul>
+<p><strong>The solution:</strong></p>
+<ul>
+<li>hardlink docker socket to /var</li>
+<li>limit docker network by iptables</li>
+</ul>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="16" data-paginate="true" data-background-color="#ffffff" data-color="#1d1d1f" data-theme="default" data-style="section {
   font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;

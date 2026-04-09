@@ -130,11 +130,6 @@ A coding agent is only as good as the tools it can reach.
   gcc, make, cmake          compilers
 ```
 
-In Docker, you **rebuild the image** for every tool change.
-
-With macOS users: **install once as admin, available to all agents instantly.**
-Upgrade `claude` or `codex` in your account -- all sandboxed agents get it.
-
 ---
 
 ## The Solution: macOS Users + RBAC
@@ -160,29 +155,29 @@ you (admin, has root via Touch ID sudo)
  |
  |-- iso acm claude                 # ACM project
  |-- iso click codex                # ClickHouse project
- |-- iso tools claude               # shared tooling
+ |-- iso mcp claude                 # mcp project
  |
  +-- acm    uid=600  /Users/acm/    chmod 700
  +-- click  uid=601  /Users/click/  chmod 700
- +-- tools  uid=602  /Users/tools/  chmod 700
+ +-- mcp  uid=602  /Users/tools/  chmod 700
 ```
 
-Each user:
-- Can't read your home or other slots
+Each sandbox user:
+- Can't read your home or others
 - Can't access network except whitelisted hosts
 - Can read `/opt/homebrew`, `/usr/local` (shared tools)
-- Has its own API keys, config, MCP servers
+- Has its own API keys, config, MCP servers, python libraries
 
 ---
 
 ## Isolator: One Script, One Config
 
-**`iso create <name>`** -- creates a macOS user with:
-- Your shell config (`.bashrc`, `.bash_profile`)
-- Your Claude/Codex config (settings, MCP servers, plugins)
-- Auth from keychain or OAuth token
-- ACL granting you read/write access to their home
-- All config files owned by root (agent can't modify)
+**`iso create <name>`** -- creates a macOS user by copying your:
+- shell config (`.bashrc`, `.bash_profile`)
+- Claude/Codex config (settings, MCP servers, plugins)
+- Claude/Codex auth (from keychain or API KEY)
+
+Also grants read/write access for `main` user to sandbox
 
 **`iso pf`** -- generates per-user firewall rules:
 - Resolves hostnames to IPs from config
@@ -208,7 +203,7 @@ hosts = ["api.anthropic.com", "mcp.demo.altinity.cloud"]
 uid = 601
 hosts = ["api.anthropic.com", "api.openai.com"]
 
-[users.tools]
+[users.mcp]
 uid = 602
 hosts = ["api.anthropic.com"]
 ```
@@ -220,8 +215,7 @@ hosts = ["api.anthropic.com"]
 ```
 /Users/acm/                         (chmod 700, own home)
   .bash_profile                     your shell config + isolator profile
-  .env                              keychain password (root-owned, read-only)
-  .claude/settings.json             your settings + bypassPermissions
+  .claude/settings.json             your settings 
   .local/bin/                       pip installs
   .npm-global/                      npm installs
   workspace/                        working directory
@@ -295,15 +289,14 @@ docker-compose up -d    # start ClickHouse, Postgres, Redis
 npm test                # integration tests hit real services
 ```
 
-**The problem:** Docker containers run inside a Linux VM, not as the sandboxed user.
-macOS `pf` rules (by UID) don't apply. An agent can `docker run curl evil.com`.
+**The problem:** 
+- Docker containers run inside a Linux VM by `main` user 
+- macOS `pf` rules (by UID) don't apply. An agent can `docker run curl evil.com`.
 
-**Two-layer solution:**
+**The solution:**
 
-| Layer | Where | Restricts |
-|-------|-------|-----------|
-| macOS `pf` | Host kernel | Host processes (by UID) |
-| Docker `iptables` | OrbStack VM | Container traffic (by subnet) |
+- hardlink docker socket to /var
+- limit docker network by iptables
 
 ---
 
