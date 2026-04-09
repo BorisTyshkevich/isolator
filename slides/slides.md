@@ -109,7 +109,8 @@ On macOS: Docker = hidden Linux VM.
 - ~2GB RAM overhead
 - Slow filesystem mounts (virtiofs / gRPC fuse)
 - No access to native macOS tooling
-- No `/opt/homebrew`, no `clickhouse-client`, no MCP servers
+- Agents can't use tools you've already installed and configured
+- Every tool change means rebuilding the Docker image
 
 We want native tools, native speed, native filesystem.
 

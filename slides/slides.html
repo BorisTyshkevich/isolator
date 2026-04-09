@@ -484,7 +484,8 @@ section.lead p {
 <li>~2GB RAM overhead</li>
 <li>Slow filesystem mounts (virtiofs / gRPC fuse)</li>
 <li>No access to native macOS tooling</li>
-<li>No <code>/opt/homebrew</code>, no <code>clickhouse-client</code>, no MCP servers</li>
+<li>Agents can't use tools you've already installed and configured</li>
+<li>Every tool change means rebuilding the Docker image</li>
 </ul>
 <p>We want native tools, native speed, native filesystem.</p>
 </section>
