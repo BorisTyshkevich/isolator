@@ -108,7 +108,6 @@ On macOS: Docker = hidden Linux VM.
 
 - ~2GB RAM overhead
 - Slow filesystem mounts (virtiofs / gRPC fuse)
-- No access to native macOS tooling
 - Agents can't use tools you've already installed and configured
 - Every tool change means rebuilding the Docker image
 
