@@ -146,9 +146,9 @@ def setup_home(name, admin):
     run(["chown", f"{name}:staff", str(home)])
     run(["chmod", "700", str(home)])
 
-    # ACL — admin can read everything, inheritable
+    # ACL — admin can read and write everything, inheritable
     run(["chmod", "+a",
-         f"{admin} allow read,list,search,readattr,readextattr,readsecurity,file_inherit,directory_inherit",
+         f"{admin} allow read,write,append,delete,list,search,readattr,writeattr,readextattr,writeextattr,readsecurity,file_inherit,directory_inherit",
          str(home)])
 
 
