@@ -1,39 +1,50 @@
 #!/usr/bin/env python3
-"""create-user: Create an isolated macOS user for AI coding agents.
+"""iso: Unified command for macOS user isolation for AI coding agents.
 
 Usage:
-    sudo create-user <name>                            # create, no auth
-    sudo create-user <name> --from USER                # copy config from USER
-    sudo create-user <name> --token TOKEN              # inject CLAUDE_CODE_OAUTH_TOKEN
-    sudo create-user <name> --keychain-pass PASS       # copy admin keychain credentials
-    sudo create-user --all --token TOKEN               # create all with token
-    sudo create-user --all --keychain-pass PASS        # create all with keychain
+    iso create <name> [options]       Create an isolated user
+    iso create --all [options]        Create all users from config
+    iso delete <name>                 Delete an isolated user and its home
+    iso delete --all                  Delete all users from config
+    iso pf                            Apply firewall rules from config
+    iso pf --dry-run                  Print firewall rules without loading
+    iso list                          List configured users
+    iso <user> <command> [args...]    Run command as isolated user
 
-Auth can also be set via env vars:
-    CLAUDE_CODE_OAUTH_TOKEN=...  sudo create-user <name>
-    ISOLATOR_KEYCHAIN_PASS=...   sudo create-user <name>
+Options for create:
+    --from USER                       Copy config from USER (default: admin)
+    --token TOKEN                     Inject CLAUDE_CODE_OAUTH_TOKEN
+    --keychain-pass PASS              Copy admin keychain credentials
+
+Examples:
+    iso create acm --keychain-pass ttt
+    iso acm claude
+    iso acm bash
+    iso acm codex --model o3
+    iso delete acm
+    iso pf
 """
 
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tomllib
 from pathlib import Path
 
+# ── Config ──────────────────────────────────────────────────────────────────
+
 CONFIG_PATH = Path("/etc/isolator/config.toml")
 PROFILE_PATH = Path("/etc/isolator/profile")
+ANCHOR_PATH = Path("/etc/pf.anchors/isolator")
+PF_CONF = Path("/etc/pf.conf")
+BASE_UID = 600
 
 SHELL_RC_FILES = {
     "bash": [".bash_profile", ".bashrc"],
     "zsh": [".zprofile", ".zshrc"],
-}
-
-# Login rc file per shell — where we append `source /etc/isolator/profile`
-SHELL_LOGIN_RC = {
-    "bash": ".bash_profile",
-    "zsh": ".zprofile",
 }
 
 CLAUDE_SETTINGS_OVERRIDES = {
@@ -41,17 +52,8 @@ CLAUDE_SETTINGS_OVERRIDES = {
     "skipDangerousModePermissionPrompt": True,
 }
 
-
-CODEX_COPY_FILES = [
-    "auth.json",
-    "AGENTS.md",
-]
-
-CODEX_COPY_DIRS = [
-    "plugins",
-    "skills",
-    "agents",
-]
+CODEX_COPY_FILES = ["auth.json", "AGENTS.md"]
+CODEX_COPY_DIRS = ["plugins", "skills", "agents"]
 
 SHARED_TOOLS = [
     {
@@ -61,6 +63,16 @@ SHARED_TOOLS = [
     },
 ]
 
+KEYCHAIN_PASS_VAR = "ISOLATOR_KEYCHAIN_PASS"
+KEYCHAIN_NAME = "login.keychain-db"
+
+# Extra flags injected when running these commands via `iso <user> <cmd>`
+COMMAND_FLAGS = {
+    "claude": ["--permission-mode", "bypassPermissions"],
+    "codex": ["--dangerously-bypass-approvals-and-sandbox"],
+}
+
+# ── Helpers ─────────────────────────────────────────────────────────────────
 
 def run(cmd, check=True):
     """Run a shell command."""
@@ -74,7 +86,7 @@ def run(cmd, check=True):
 
 
 def run_as(user, cmd, check=True):
-    """Run a command as another user. We're already root, so just switch uid/gid."""
+    """Run a command as another user via uid/gid switch."""
     import pwd
     pw = pwd.getpwnam(user)
     home = pw.pw_dir
@@ -99,11 +111,9 @@ def load_config():
 
 
 def dscl_read(user, key):
-    """Read a dscl property, return value or None."""
     r = run(["dscl", ".", "-read", f"/Users/{user}", key], check=False)
     if r.returncode != 0:
         return None
-    # dscl output: "Key: value" or multiline
     for line in r.stdout.strip().splitlines():
         if line.startswith(f"{key}:"):
             return line.split(":", 1)[1].strip()
@@ -116,18 +126,47 @@ def user_exists(name):
 
 
 def detect_shell(user):
-    """Detect user's shell, return 'bash' or 'zsh'."""
     shell = dscl_read(user, "UserShell") or "/bin/zsh"
     if "zsh" in shell:
         return "zsh", shell
     return "bash", shell
 
 
+def copy_path(src, dst):
+    """Copy file, directory, or symlink."""
+    if dst.exists() or dst.is_symlink():
+        if dst.is_dir() and not dst.is_symlink():
+            shutil.rmtree(dst)
+        else:
+            dst.unlink()
+    if src.is_symlink():
+        os.symlink(os.readlink(src), dst)
+    elif src.is_dir():
+        shutil.copytree(src, dst, symlinks=True)
+    else:
+        shutil.copy2(src, dst)
+
+
+# ── Create ──────────────────────────────────────────────────────────────────
+
+def next_uid(users):
+    used = {u["uid"] for u in users.values() if "uid" in u}
+    uid = BASE_UID
+    while uid in used:
+        uid += 1
+    return uid
+
+
+def add_user_to_config(name, uid):
+    entry = f"\n[users.{name}]\nuid = {uid}\n"
+    with open(CONFIG_PATH, "a") as f:
+        f.write(entry)
+    print(f"  Added [users.{name}] (uid={uid}) to {CONFIG_PATH}")
+
+
 def create_macos_user(name, uid, shell_path):
-    """Create a hidden macOS user via dscl."""
     home = f"/Users/{name}"
     print(f"  Creating macOS user {name} (uid={uid}, shell={shell_path})")
-
     run(["dscl", ".", "-create", f"/Users/{name}"])
     run(["dscl", ".", "-create", f"/Users/{name}", "UserShell", shell_path])
     run(["dscl", ".", "-create", f"/Users/{name}", "RealName", f"Isolator {name}"])
@@ -138,26 +177,20 @@ def create_macos_user(name, uid, shell_path):
 
 
 def setup_home(name, admin):
-    """Create home dir with proper permissions and ACL."""
     home = Path(f"/Users/{name}")
     print(f"  Setting up home {home}")
-
     home.mkdir(mode=0o700, exist_ok=True)
     run(["chown", f"{name}:staff", str(home)])
     run(["chmod", "700", str(home)])
-
-    # ACL — admin can read and write everything, inheritable
     run(["chmod", "+a",
          f"{admin} allow read,write,append,delete,list,search,readattr,writeattr,readextattr,writeextattr,readsecurity,file_inherit,directory_inherit",
          str(home)])
 
 
 def copy_shell_config(name, source_user, shell_type):
-    """Copy shell rc files from source user, append isolator profile source."""
     home = Path(f"/Users/{name}")
     source_home = Path(f"/Users/{source_user}")
     rc_files = SHELL_RC_FILES.get(shell_type, [])
-    login_rc = SHELL_LOGIN_RC.get(shell_type, ".bash_profile")
 
     for rc in rc_files:
         src = source_home / rc
@@ -165,12 +198,7 @@ def copy_shell_config(name, source_user, shell_type):
         if src.exists():
             print(f"  Copying {src} -> {dst}")
             shutil.copy2(src, dst)
-        else:
-            # Create empty file so we can append to login rc
-            if rc == login_rc:
-                dst.touch()
 
-    # Append isolator profile source to all rc files (login + interactive)
     source_line = f"\nsource {PROFILE_PATH}\n"
     for rc in rc_files:
         rc_path = home / rc
@@ -183,46 +211,32 @@ def copy_shell_config(name, source_user, shell_type):
 
 
 def copy_claude_config(name, source_user):
-    """Copy Claude Code config from source user."""
     home = Path(f"/Users/{name}")
     source_home = Path(f"/Users/{source_user}")
 
-    # ~/.claude/settings.json — copy and merge overrides
     claude_dir = home / ".claude"
     claude_dir.mkdir(exist_ok=True)
 
+    # settings.json
     src_settings = source_home / ".claude" / "settings.json"
     dst_settings = claude_dir / "settings.json"
-
     settings = {}
     if src_settings.exists():
         print(f"  Copying {src_settings}")
         settings = json.loads(src_settings.read_text())
-
     settings.update(CLAUDE_SETTINGS_OVERRIDES)
     dst_settings.write_text(json.dumps(settings, indent=2) + "\n")
 
-
-    # ~/.claude.json — extract only mcpServers from source
+    # .claude.json
     src_claude_json = source_home / ".claude.json"
     dst_claude_json = home / ".claude.json"
-
-    # Keys to copy from source .claude.json
     CLAUDE_JSON_KEYS = [
-        "mcpServers",
-        "oauthAccount",
-        "hasCompletedOnboarding",
-        "lastOnboardingVersion",
-        "numStartups",
-        "firstStartTime",
-        "migrationVersion",
-        "opusProMigrationComplete",
-        "sonnet45MigrationComplete",
-        "sonnet1m45MigrationComplete",
-        "opus45MigrationComplete",
-        "thinkingMigrationComplete",
+        "mcpServers", "oauthAccount", "hasCompletedOnboarding",
+        "lastOnboardingVersion", "numStartups", "firstStartTime",
+        "migrationVersion", "opusProMigrationComplete",
+        "sonnet45MigrationComplete", "sonnet1m45MigrationComplete",
+        "opus45MigrationComplete", "thinkingMigrationComplete",
     ]
-
     claude_json_data = {}
     if src_claude_json.exists():
         try:
@@ -236,10 +250,9 @@ def copy_claude_config(name, source_user):
                 print(f"  Copying OAuth account: {claude_json_data['oauthAccount'].get('emailAddress', '?')}")
         except (json.JSONDecodeError, KeyError):
             pass
-
     dst_claude_json.write_text(json.dumps(claude_json_data, indent=2) + "\n")
 
-    # ~/.claude/skills — copy symlink
+    # skills symlink
     src_skills = source_home / ".claude" / "skills"
     dst_skills = claude_dir / "skills"
     if src_skills.is_symlink():
@@ -249,7 +262,7 @@ def copy_claude_config(name, source_user):
             dst_skills.unlink()
         os.symlink(target, dst_skills)
 
-    # ~/.claude/plugins/ — copy dir
+    # plugins
     src_plugins = source_home / ".claude" / "plugins"
     dst_plugins = claude_dir / "plugins"
     if src_plugins.is_dir():
@@ -259,33 +272,14 @@ def copy_claude_config(name, source_user):
         shutil.copytree(src_plugins, dst_plugins)
 
 
-def copy_path(src, dst):
-    """Copy file, directory, or symlink from src to dst."""
-    if dst.exists() or dst.is_symlink():
-        if dst.is_dir() and not dst.is_symlink():
-            shutil.rmtree(dst)
-        else:
-            dst.unlink()
-
-    if src.is_symlink():
-        os.symlink(os.readlink(src), dst)
-    elif src.is_dir():
-        shutil.copytree(src, dst, symlinks=True)
-    else:
-        shutil.copy2(src, dst)
-
-
 def sanitize_codex_config(src, dst):
-    """Copy ~/.codex/config.toml but drop source-user project trust entries."""
     try:
         lines = src.read_text().splitlines()
     except OSError:
         return False
-
     sanitized = []
     skip_section = False
     removed_projects = 0
-
     for line in lines:
         stripped = line.strip()
         if stripped.startswith("[projects.") and stripped.endswith("]"):
@@ -296,55 +290,29 @@ def sanitize_codex_config(src, dst):
             skip_section = False
         if not skip_section:
             sanitized.append(line)
-
     dst.write_text("\n".join(sanitized).rstrip() + "\n")
     print(f"  Copying {src} -> {dst} (dropped {removed_projects} project trust entries)")
     return True
 
 
-def ensure_shared_tool_access():
-    """Make selected Homebrew-installed tools executable by slot users."""
-    for tool in SHARED_TOOLS:
-        bin_path = tool["bin"]
-        package_dir = tool["package_dir"]
-
-        if not bin_path.exists():
-            continue
-
-        if not package_dir.exists():
-            print(f"  WARNING: {tool['name']} binary exists but package dir {package_dir} is missing")
-            continue
-
-        print(f"  Ensuring shared access to {tool['name']} in {package_dir}")
-        run(["chmod", "-R", "a+rX", str(package_dir)])
-        if bin_path.is_symlink():
-            run(["chmod", "-h", "755", str(bin_path)], check=False)
-
-
 def copy_codex_config(name, source_user):
-    """Copy curated Codex config from source user."""
     home = Path(f"/Users/{name}")
     source_home = Path(f"/Users/{source_user}")
     src_codex = source_home / ".codex"
     dst_codex = home / ".codex"
-
     if not src_codex.exists():
         print("  No ~/.codex found in source user, skipping Codex config")
         return
-
     dst_codex.mkdir(exist_ok=True)
-
     src_config = src_codex / "config.toml"
     if src_config.exists():
         sanitize_codex_config(src_config, dst_codex / "config.toml")
-
     for rel in CODEX_COPY_FILES:
         src = src_codex / rel
         dst = dst_codex / rel
         if src.exists() or src.is_symlink():
             print(f"  Copying {src} -> {dst}")
             copy_path(src, dst)
-
     for rel in CODEX_COPY_DIRS:
         src = src_codex / rel
         dst = dst_codex / rel
@@ -353,18 +321,27 @@ def copy_codex_config(name, source_user):
             copy_path(src, dst)
 
 
+def ensure_shared_tool_access():
+    for tool in SHARED_TOOLS:
+        bin_path = tool["bin"]
+        package_dir = tool["package_dir"]
+        if not bin_path.exists():
+            continue
+        if not package_dir.exists():
+            print(f"  WARNING: {tool['name']} binary exists but package dir {package_dir} is missing")
+            continue
+        print(f"  Ensuring shared access to {tool['name']} in {package_dir}")
+        run(["chmod", "-R", "a+rX", str(package_dir)])
+        if bin_path.is_symlink():
+            run(["chmod", "-h", "755", str(bin_path)], check=False)
 
 
-KEYCHAIN_PASS_VAR = "ISOLATOR_KEYCHAIN_PASS"
-KEYCHAIN_NAME = "login.keychain-db"
-
+# ── Auth ────────────────────────────────────────────────────────────────────
 
 def inject_auth_env(name):
-    """Mode 1: CLAUDE_CODE_OAUTH_TOKEN in admin env → copy to slot's .env."""
     token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
     if not token:
         return False
-
     home = Path(f"/Users/{name}")
     env_file = home / ".env"
     env_file.write_text(f'# Isolator auth\nexport CLAUDE_CODE_OAUTH_TOKEN="{token}"\n')
@@ -373,52 +350,40 @@ def inject_auth_env(name):
 
 
 def inject_auth_keychain(name):
-    """Mode 2: ISOLATOR_KEYCHAIN_PASS in admin env → copy keychain credentials."""
     kc_pass = os.environ.get(KEYCHAIN_PASS_VAR)
     if not kc_pass:
         return False
-
     home = Path(f"/Users/{name}")
     kc_dir = home / "Library" / "Keychains"
     kc_file = kc_dir / KEYCHAIN_NAME
 
-    # Read credential from admin's keychain
     r = run(["security", "find-generic-password",
              "-s", "Claude Code-credentials", "-w"], check=False)
     if r.returncode != 0:
         print(f"  WARNING: no Claude Code credentials in admin keychain, skipping")
         return False
-
     cred_value = r.stdout.strip()
 
-    # Create slot's keychain
     kc_dir.mkdir(parents=True, exist_ok=True)
     run(["chown", "-R", f"{name}:staff", str(home / "Library")])
-
     if kc_file.exists():
         run_as(name, ["security", "delete-keychain", str(kc_file)], check=False)
-
     run_as(name, ["security", "create-keychain", "-p", kc_pass, str(kc_file)])
     run_as(name, ["security", "default-keychain", "-s", str(kc_file)])
     run_as(name, ["security", "list-keychains", "-s", str(kc_file)])
     run_as(name, ["security", "set-keychain-settings", str(kc_file)])
     run_as(name, ["security", "unlock-keychain", "-p", kc_pass, str(kc_file)])
-
-    # Add credential
     run_as(name, ["security", "add-generic-password",
-         "-s", "Claude Code-credentials",
-         "-a", "Claude Code",
-         "-w", cred_value,
-         "-T", "",
-         str(kc_file)])
+         "-s", "Claude Code-credentials", "-a", "Claude Code",
+         "-w", cred_value, "-T", "", str(kc_file)])
 
-    # Write .credentials.json so Claude Code uses fresh token (not stale cache)
+    # Write .credentials.json so Claude Code uses fresh token
     claude_dir = home / ".claude"
     claude_dir.mkdir(exist_ok=True)
     creds_file = claude_dir / ".credentials.json"
     creds_file.write_text(cred_value + "\n")
 
-    # Replace .env: remove stale token, store keychain password for profile unlock
+    # Replace .env: store keychain password for profile unlock
     env_file = home / ".env"
     env_file.write_text(f'# Isolator auth (keychain)\nexport ISOLATOR_KEYCHAIN_PASS="{kc_pass}"\n')
 
@@ -427,19 +392,15 @@ def inject_auth_keychain(name):
 
 
 def inject_auth(name, user_config):
-    """Inject auth from environment. Tries env token first, then keychain."""
     if inject_auth_env(name):
         return
     if inject_auth_keychain(name):
         return
-
-    # Fallback: config-based key files (if [users.*.auth] exists)
     home = Path(f"/Users/{name}")
     auth = user_config.get("auth", {})
     if not auth:
         print(f"  No auth: set CLAUDE_CODE_OAUTH_TOKEN or {KEYCHAIN_PASS_VAR} in your env")
         return
-
     env_file = home / ".env"
     lines = ["# Isolator auth"]
     for var, keyfile in auth.items():
@@ -450,22 +411,20 @@ def inject_auth(name, user_config):
         value = keypath.read_text().strip()
         lines.append(f'export {var}="{value}"')
         print(f"  Injecting {var} from {keypath}")
-
     env_file.write_text("\n".join(lines) + "\n")
 
 
+# ── Ownership ───────────────────────────────────────────────────────────────
+
 def create_skeleton(name):
-    """Create standard directory skeleton."""
     home = Path(f"/Users/{name}")
     for d in [".local/bin", ".local/lib", ".npm-global", ".cache", "workspace"]:
         (home / d).mkdir(parents=True, exist_ok=True)
 
 
 def set_ownership(name):
-    """Set final ownership: config files root-owned 444, home dirs owned by user."""
     home = Path(f"/Users/{name}")
 
-    # Config files — root-owned, read-only
     for f in [".bash_profile", ".bashrc", ".zprofile", ".zshrc",
               ".env", ".claude/settings.json",
               ".claude.json", ".codex/config.toml", ".codex/AGENTS.md"]:
@@ -474,37 +433,31 @@ def set_ownership(name):
             run(["chown", "root:wheel", str(path)])
             run(["chmod", "444", str(path)])
 
-    # .claude dir — slot-owned (Claude needs to create subdirs for sessions, etc.)
     claude_dir = home / ".claude"
     if claude_dir.exists():
         run(["chown", f"{name}:staff", str(claude_dir)])
         run(["chmod", "700", str(claude_dir)])
 
-    # plugins — root-owned
     plugins_dir = home / ".claude" / "plugins"
     if plugins_dir.exists():
         run(["chown", "-R", "root:wheel", str(plugins_dir)])
         run(["chmod", "-R", "755", str(plugins_dir)])
 
-    # .claude.json — slot-owned (Claude writes state to it)
     cj = home / ".claude.json"
     if cj.exists():
         run(["chown", f"{name}:staff", str(cj)])
         run(["chmod", "600", str(cj)])
 
-    # .codex dir — slot-owned for runtime state
     codex_dir = home / ".codex"
     if codex_dir.exists():
         run(["chown", f"{name}:staff", str(codex_dir)])
         run(["chmod", "700", str(codex_dir)])
 
-    # auth.json — slot-owned (Codex may refresh tokens)
     codex_auth = codex_dir / "auth.json"
     if codex_auth.exists():
         run(["chown", f"{name}:staff", str(codex_auth)])
         run(["chmod", "600", str(codex_auth)])
 
-    # Curated Codex content — root-owned, read-only
     for rel in [".codex/plugins", ".codex/skills", ".codex/agents"]:
         path = home / rel
         if path.exists():
@@ -514,34 +467,15 @@ def set_ownership(name):
                 run(["chown", "-R", "root:wheel", str(path)])
                 run(["chmod", "-R", "755", str(path)])
 
-    # Everything else — owned by slot user
     for d in [".local", ".npm-global", ".cache", "workspace"]:
         path = home / d
         if path.exists():
             run(["chown", "-R", f"{name}:staff", str(path)])
 
 
-BASE_UID = 600
+# ── Create command ──────────────────────────────────────────────────────────
 
-
-def next_uid(users):
-    """Return the next available UID starting from BASE_UID."""
-    used = {u["uid"] for u in users.values() if "uid" in u}
-    uid = BASE_UID
-    while uid in used:
-        uid += 1
-    return uid
-
-
-def add_user_to_config(name, uid):
-    """Append a new user section to config.toml."""
-    entry = f"\n[users.{name}]\nuid = {uid}\n"
-    with open(CONFIG_PATH, "a") as f:
-        f.write(entry)
-    print(f"  Added [users.{name}] (uid={uid}) to {CONFIG_PATH}")
-
-
-def create_user(name, config, from_user=None):
+def cmd_create(name, config, from_user=None):
     """Create one isolated user."""
     users = config.get("users", {})
     admin = config["admin"]
@@ -553,13 +487,10 @@ def create_user(name, config, from_user=None):
 
     user_config = users[name]
     uid = user_config["uid"]
-
-    # Resolve source user: --from > config from > admin
     source = from_user or user_config.get("from", admin)
 
     print(f"\n=== Creating {name} (uid={uid}, from={source}) ===")
 
-    # Ensure admin home is not world-readable
     admin_home = Path(f"/Users/{admin}")
     if admin_home.stat().st_mode & 0o077:
         print(f"  Locking admin home {admin_home} to 700")
@@ -585,57 +516,213 @@ def create_user(name, config, from_user=None):
     print(f"=== Done: {name} ===")
 
 
-def main():
-    if os.geteuid() != 0:
-        print("Error: must run as root (sudo)")
-        sys.exit(1)
+# ── Delete command ──────────────────────────────────────────────────────────
 
-    if len(sys.argv) < 2:
-        print(__doc__)
+def cmd_delete(name):
+    """Delete one isolated user and its home directory."""
+    home = Path(f"/Users/{name}")
+
+    print(f"\n=== Deleting {name} ===")
+
+    if user_exists(name):
+        kc_file = home / "Library" / "Keychains" / KEYCHAIN_NAME
+        if kc_file.exists():
+            run(["security", "delete-keychain", str(kc_file)], check=False)
+        print(f"  Removing macOS user {name}")
+        run(["dscl", ".", "-delete", f"/Users/{name}"])
+    else:
+        print(f"  User {name} does not exist in directory")
+
+    if home.exists():
+        print(f"  Removing {home}")
+        shutil.rmtree(home)
+    else:
+        print(f"  Home {home} does not exist")
+
+    print(f"=== Done: {name} ===")
+
+
+# ── Firewall command ────────────────────────────────────────────────────────
+
+def resolve_hosts(hosts):
+    ips = set()
+    for host in hosts:
+        try:
+            results = socket.getaddrinfo(host, 443, socket.AF_INET, socket.SOCK_STREAM)
+            for _, _, _, _, addr in results:
+                ips.add(addr[0])
+        except socket.gaierror as e:
+            print(f"  WARNING: cannot resolve {host}: {e}")
+    return sorted(ips)
+
+
+def generate_anchor(config):
+    users = config.get("users", {})
+    global_hosts = config.get("global", {}).get("hosts", [])
+    lines = ["# Generated by isolator", ""]
+    all_uids = []
+
+    for name, user_config in users.items():
+        uid = user_config["uid"]
+        all_uids.append(uid)
+        hosts = user_config.get("hosts", []) + global_hosts
+        print(f"  Resolving hosts for {name} (uid={uid})...")
+        for h in hosts:
+            print(f"    {h}")
+        ips = resolve_hosts(hosts)
+        print(f"    -> {len(ips)} IPs")
+        if ips:
+            ip_list = ", ".join(ips)
+            lines.append(f"table <{name}-allowed> {{ {ip_list} }}")
+
+    lines.append("")
+
+    if not all_uids:
+        print("No users in config, nothing to do")
+        return ""
+
+    uid_list = " ".join(str(u) for u in all_uids)
+    lines.append(f"block out proto tcp user {{ {uid_list} }}")
+    lines.append(f"block out proto udp user {{ {uid_list} }}")
+    lines.append("")
+
+    for name, user_config in users.items():
+        uid = user_config["uid"]
+        lines.append(f"pass out proto tcp user {uid} to <{name}-allowed> port 443")
+
+    lines.append("")
+    lines.append(f"pass out proto udp user {{ {uid_list} }} to 127.0.0.1 port 53")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def ensure_pf_conf():
+    content = PF_CONF.read_text() if PF_CONF.exists() else ""
+    if 'anchor "isolator"' not in content:
+        print(f"  Adding anchor to {PF_CONF}")
+        additions = '\nanchor "isolator"\nload anchor "isolator" from "/etc/pf.anchors/isolator"\n'
+        PF_CONF.write_text(content + additions)
+
+
+def cmd_pf(config, dry_run=False):
+    anchor = generate_anchor(config)
+    if not anchor:
+        return
+    if dry_run:
+        print("\n--- Generated anchor (dry run) ---")
+        print(anchor)
+        return
+    print(f"\n  Writing {ANCHOR_PATH}")
+    ANCHOR_PATH.parent.mkdir(parents=True, exist_ok=True)
+    ANCHOR_PATH.write_text(anchor)
+    ensure_pf_conf()
+    print("  Loading pf rules...")
+    r = subprocess.run(["pfctl", "-ef", str(PF_CONF)],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        print(f"  ERROR: pfctl failed: {r.stderr}")
         sys.exit(1)
+    print("  pf rules loaded")
+
+
+# ── Run command ─────────────────────────────────────────────────────────────
+
+def cmd_run(user, command, args):
+    """Run a command as an isolated user via sudo."""
+    extra = COMMAND_FLAGS.get(command, [])
+    os.execvp("sudo", ["sudo", "-u", user, "-i", command] + extra + args)
+
+
+# ── List command ────────────────────────────────────────────────────────────
+
+def cmd_list(config):
+    users = config.get("users", {})
+    if not users:
+        print("No users configured")
+        return
+    for name, uc in users.items():
+        uid = uc.get("uid", "?")
+        exists = "exists" if user_exists(name) else "not created"
+        hosts = ", ".join(uc.get("hosts", []))
+        print(f"  {name:15s} uid={uid:4}  {exists:12s}  hosts: {hosts or '(none)'}")
+
+
+# ── Main ────────────────────────────────────────────────────────────────────
+
+SUBCOMMANDS = {"create", "delete", "pf", "list"}
+
+
+def parse_create_args(args):
+    """Parse options for create subcommand."""
+    from_user = None
+    names = []
+
+    while args:
+        arg = args.pop(0)
+        if arg == "--token":
+            os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = args.pop(0)
+        elif arg == "--keychain-pass":
+            os.environ[KEYCHAIN_PASS_VAR] = args.pop(0)
+        elif arg == "--from":
+            from_user = args.pop(0)
+        elif arg == "--all":
+            names.append("--all")
+        else:
+            names.append(arg)
+
+    return names, from_user
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
+        print(__doc__)
+        sys.exit(0)
+
+    subcmd = sys.argv[1]
+
+    # ── iso <user> <command> [args...] ──
+    if subcmd not in SUBCOMMANDS and not subcmd.startswith("-"):
+        if len(sys.argv) < 3:
+            print(f"Usage: iso <user> <command> [args...]")
+            sys.exit(1)
+        cmd_run(subcmd, sys.argv[2], sys.argv[3:])
+        return
+
+    # Everything below requires root
+    if subcmd != "list" and os.geteuid() != 0:
+        # Re-exec with sudo
+        os.execvp("sudo", ["sudo"] + sys.argv)
 
     config = load_config()
 
-    # Parse --token and --keychain-pass into env vars
-    # so the auth functions can read them uniformly
-    args = sys.argv[1:]
-    if "--token" in args:
-        idx = args.index("--token")
-        if idx + 1 < len(args):
-            os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = args.pop(idx + 1)
-            args.pop(idx)
-        else:
-            print("Error: --token requires a value")
+    if subcmd == "create":
+        names, from_user = parse_create_args(sys.argv[2:])
+        if not names:
+            print("Usage: iso create <name> [options]")
             sys.exit(1)
-
-    if "--keychain-pass" in args:
-        idx = args.index("--keychain-pass")
-        if idx + 1 < len(args):
-            os.environ["ISOLATOR_KEYCHAIN_PASS"] = args.pop(idx + 1)
-            args.pop(idx)
+        if "--all" in names:
+            for name in config.get("users", {}):
+                cmd_create(name, config, from_user)
         else:
-            print("Error: --keychain-pass requires a value")
-            sys.exit(1)
+            for name in names:
+                cmd_create(name, config, from_user)
 
-    from_user = None
-    if "--from" in args:
-        idx = args.index("--from")
-        if idx + 1 < len(args):
-            from_user = args.pop(idx + 1)
-            args.pop(idx)
+    elif subcmd == "delete":
+        if len(sys.argv) < 3:
+            print("Usage: iso delete <name>")
+            sys.exit(1)
+        if sys.argv[2] == "--all":
+            for name in config.get("users", {}):
+                cmd_delete(name)
         else:
-            print("Error: --from requires a username")
-            sys.exit(1)
+            cmd_delete(sys.argv[2])
 
-    if not args:
-        print(__doc__)
-        sys.exit(1)
+    elif subcmd == "pf":
+        dry_run = "--dry-run" in sys.argv
+        cmd_pf(config, dry_run)
 
-    if args[0] == "--all":
-        for name in config.get("users", {}):
-            create_user(name, config, from_user)
-    else:
-        create_user(args[0], config, from_user)
+    elif subcmd == "list":
+        cmd_list(config)
 
 
 if __name__ == "__main__":

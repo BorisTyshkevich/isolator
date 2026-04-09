@@ -23,6 +23,11 @@ export NPM_CONFIG_ignore_scripts=true
 export PIP_USER=1
 export PYTHONUSERBASE="$HOME/.local"
 
-# Bypass permissions — sandboxed users are isolated by OS
+# Docker — shared socket proxy (OrbStack)
+if [[ -S /var/run/docker-shared.sock ]]; then
+    export DOCKER_HOST="unix:///var/run/docker-shared.sock"
+fi
+
+# Bypass permissions — fallback for interactive shells (iso user bash → claude)
 alias claude='claude --permission-mode bypassPermissions'
 alias codex='codex --dangerously-bypass-approvals-and-sandbox'

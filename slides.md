@@ -285,10 +285,49 @@ sudo apply-pf
 
 ---
 
+## But What About Docker? Agents Need It.
+
+AI agents don't just write code — they **build and test** it.
+
+```bash
+docker-compose up -d    # start ClickHouse, Postgres, Redis
+npm test                # integration tests hit real services
+docker logs clickhouse  # debug failing test
+```
+
+This is not Docker-as-sandbox. This is Docker-as-dependency.
+
+**The Docker-in-Docker problem:**
+- VM-based sandboxes can't easily nest Docker
+- Docker socket access = root-equivalent privilege
+- Giving an agent `/var/run/docker.sock` defeats isolation
+
+---
+
+## Isolator + Docker: Solved with socat
+
+OrbStack (or Docker Desktop) runs as the admin. The socket lives in `~/`.
+Isolated users can't reach it. Fix: **proxy the socket**.
+
+```bash
+# socat proxy — runs as launchd daemon
+socat UNIX-LISTEN:/var/run/docker-shared.sock,fork,group=staff,mode=770 \
+      UNIX-CONNECT:/var/run/docker.sock
+```
+
+Each isolated user gets `DOCKER_HOST` via the profile:
+```bash
+export DOCKER_HOST="unix:///var/run/docker-shared.sock"
+```
+
+**Result:** agents run `docker`, `docker-compose`, build images, start services — all from inside their sandbox. No VM nesting. No privilege escalation.
+
+---
+
 <!-- _class: lead -->
 
 # Isolator
 
 Open source. Python. Stdlib only.
 
-Two scripts. One config. Works today.
+One script. One config. Works today.
