@@ -1,18 +1,17 @@
-# Isolator
+# Isolator — macOS Spec
 
 Run AI coding agents inside per-user Unix isolation on macOS.
-No VM, no Docker. Just sudo + pf + ACL.
+No VM, no Docker. Just `iso` + pf + ACL.
 
 ## What it does
 
-Two Python scripts (stdlib only, no packages):
+One Python script (`iso`), stdlib only:
 
-1. **`create-user <name>`** — create macOS user, ACL, copy source user's shell/Claude/Codex config, inject auth
-2. **`apply-pf`** — generate and load pf firewall rules from config (per-user + global hosts)
-
-After that:
 ```bash
-sudo -u slot-0 -i claude
+iso create acm --keychain         # create user, copy config, inject auth
+iso pf                            # generate pf + Docker iptables rules
+iso acm claude                    # run agent (bypass permissions auto-injected)
+iso acm                           # open shell as user
 ```
 
 ---
@@ -31,127 +30,150 @@ hosts = [
     "files.pythonhosted.org",
 ]
 
-[users.slot-0]
+[users.acm]
 uid = 600
 hosts = [
     "api.anthropic.com",
     "sentry.io",
 ]
 
-[users.slot-0.auth]
-ANTHROPIC_API_KEY = "/etc/isolator/keys/anthropic"
-
-[users.slot-1]
+[users.click]
 uid = 601
 hosts = [
+    "api.anthropic.com",
     "api.openai.com",
 ]
 
-[users.slot-1.auth]
-OPENAI_API_KEY = "/etc/isolator/keys/openai"
-
-[users.slot-2]
+[users.tools]
 uid = 602
-from = "slot-0"                # copy shell/claude config from slot-0 instead of admin
+from = "acm"
 hosts = [
     "api.anthropic.com",
-    "mcp.demo.altinity.cloud",
 ]
-
-[users.slot-2.auth]
-ANTHROPIC_API_KEY = "/etc/isolator/keys/anthropic"
 ```
 
-Key files: `/etc/isolator/keys/` — root:wheel 600, one raw key per file.
+Users are auto-added to config if not present (`iso create newuser` assigns next available UID).
 
 ---
 
-## create-user
+## The `iso` command
 
-`create-user <name> [--from USER]` or `create-user --all`
+```bash
+iso create <name> [options]       # Create isolated user
+iso create --all [options]        # Create all users from config
+iso delete <name>                 # Delete user and home
+iso delete --all                  # Delete all users
+iso pf                            # Apply pf + Docker iptables rules
+iso pf --dry-run                  # Print rules without loading
+iso list                          # List configured users
+iso <user> [command] [args...]    # Run command as user (default: bash)
+```
+
+### Create options
+
+```bash
+--keychain              # Copy admin's keychain credentials (encrypted, recommended)
+--token TOKEN           # Write OAuth token to .credentials.json (plaintext)
+--from USER             # Copy config from USER instead of admin
+```
+
+### Bypass permissions
+
+- `iso acm claude` → auto-injects `--permission-mode bypassPermissions`
+- Codex bypass set via `config.toml` overrides (`approval_policy = "never"`, `sandbox_mode = "danger-full-access"`)
+- Profile alias as fallback for interactive shells: `alias claude='claude --permission-mode bypassPermissions'`
+
+---
+
+## iso create
 
 ### Config source resolution
 
 1. `--from` CLI flag (highest priority)
-2. `from` field in config (`[users.<name>]`)
+2. `from` field in config
 3. `admin` user from config (default)
-
-The source is just a home directory — works the same whether it's admin or another slot.
-
-### Shell detection
-
-Reads the source user's shell from `dscl . -read /Users/<source> UserShell`.
-Sets the same shell for the slot user. Copies the matching rc files:
-- **bash**: `.bash_profile`, `.bashrc`
-- **zsh**: `.zshrc`, `.zprofile`
 
 ### Steps
 
-1. **Create macOS user** — `dscl` (hidden, no password, staff group, same shell as source, home `/Users/<name>`)
+1. **Create macOS user** — `dscl` (hidden, no password, staff group, same shell as source)
 2. **Home dir** — `mkdir`, `chown`, `chmod 700`
-3. **ACL** — `chmod +a` granting admin `read,list,search,readattr,readextattr,readsecurity,file_inherit,directory_inherit`
-4. **Copy source's shell config** — detected rc files for the shell. Append `source /etc/isolator/profile` to the login rc (`.bash_profile` or `.zprofile`).
-5. **Copy source's Claude config:**
-   - `~/.claude/settings.json` — copy and merge `"defaultMode": "bypassPermissions"`, `"skipDangerousModePermissionPrompt": true`
-   - `~/.claude.json` — create new file with `mcpServers` + `oauthAccount` from source
-   - `~/.claude/skills` — copy symlink if exists
-   - `~/.claude/plugins/` — copy dir if exists
-6. **Copy source's Codex config:**
-   - `~/.codex/config.toml` — copy but drop all `[projects."..."]` trust entries
-   - `~/.codex/auth.json` — copy as slot login/account state
-   - `~/.codex/plugins/`, `~/.codex/skills/`, `~/.codex/agents/` — copy if present
-   - `~/.codex/AGENTS.md` — copy if present
-   - Do not copy histories, logs, sqlite DBs, caches, archived sessions, or tmp state
-7. **Inject auth** — read key files from config `[users.<name>.auth]`, write `~/.env` (chmod 400).
-   For Claude Code: run `claude setup-token` once as admin, store the long-lived OAuth token
-   in `/etc/isolator/keys/claude-oauth`, reference as `CLAUDE_CODE_OAUTH_TOKEN` in config.
-8. **Skeleton dirs** — `.local/bin`, `.local/lib`, `.npm-global`, `.cache`
-9. **Normalize shared tool access** — if Homebrew `codex` is installed with user-private npm permissions, fix `/opt/homebrew/bin/codex` and its package tree to be world-readable/executable
-10. **Set ownership** — static config files owned by root, Codex `auth.json` owned by the slot user so runtime token refresh can work
+3. **ACL** — `chmod +a` granting admin full read/write, file+directory inherit
+4. **Copy shell config** — detected rc files for bash/zsh. Append `source /etc/isolator/profile` to all rc files (login + interactive)
+5. **Copy Claude config:**
+   - `~/.claude/settings.json` — merge `defaultMode: bypassPermissions`, `skipDangerousModePermissionPrompt: true`
+   - `~/.claude.json` — `mcpServers`, `oauthAccount`, onboarding state
+   - `~/.claude/skills` symlink, `~/.claude/plugins/` directory
+6. **Copy Codex config:**
+   - `~/.codex/config.toml` — drop `[projects."..."]` trust entries, override `approval_policy = "never"`, `sandbox_mode = "danger-full-access"`
+   - `~/.codex/auth.json`, `plugins/`, `skills/`, `agents/`, `AGENTS.md`
+7. **Inject auth** (only if `--keychain` or `--token` provided):
+   - Keychain: generate secure random password → `/etc/isolator/keychain/<user>` (root 400), create user keychain, copy credentials
+   - Token: write `.credentials.json`
+8. **Create Docker network** — `iso-<name>` with dedicated subnet
+9. **Skeleton dirs** — `.local/bin`, `.local/lib`, `.npm-global`, `.cache`, `workspace`
+10. **Normalize shared tools** — fix Homebrew codex permissions
+11. **Set ownership** — config files root-owned 444, runtime dirs user-owned
+12. **Exclude from Time Machine** — `tmutil addexclusion` for home and keychain dir
 
-### What gets copied and why
+### What gets copied
 
 | Source | Destination | Why |
 |--------|------------|-----|
-| `~source/.bash_profile` or `.zprofile` | `~slot/...` | Login shell config |
-| `~source/.bashrc` or `.zshrc` | `~slot/...` | Interactive shell config |
-| `~source/.claude/settings.json` | `~slot/.claude/settings.json` | Plugins, status line, preferences |
-| `~source/.claude.json` → `mcpServers` | `~slot/.claude.json` | Global MCP servers |
-| `~source/.claude/skills` | `~slot/.claude/skills` | Custom skills symlink |
-| `~source/.claude/plugins/` | `~slot/.claude/plugins/` | Installed plugins |
-| `~source/.codex/config.toml` | `~slot/.codex/config.toml` | Codex preferences and MCP/plugins without source-user project trust |
-| `~source/.codex/auth.json` | `~slot/.codex/auth.json` | Codex login/account state |
-| `~source/.codex/plugins/` | `~slot/.codex/plugins/` | Installed Codex plugins |
-| `~source/.codex/skills/` | `~slot/.codex/skills/` | Installed Codex skills |
-| `~source/.codex/agents/` | `~slot/.codex/agents/` | Agent presets |
-| `/etc/isolator/keys/*` | `~slot/.env` | API keys per config |
-
-Source = `--from` user, or config `from`, or admin (default).
+| Shell rc files | `~user/` | Login + interactive shell config |
+| `~source/.claude/settings.json` | Merged with overrides | Plugins, preferences + bypass mode |
+| `~source/.claude.json` → select keys | `~user/.claude.json` | MCP servers, OAuth account |
+| `~source/.claude/skills`, `plugins/` | `~user/.claude/` | Custom skills and plugins |
+| `~source/.codex/config.toml` | Sanitized + bypass overrides | Codex preferences without project trust |
+| `~source/.codex/auth.json`, `plugins/`, etc. | `~user/.codex/` | Codex auth and extensions |
 
 ### What does NOT get copied
 
-- `~admin/.claude/projects/` — session state, per-project MCP (path-specific)
-- `~admin/.claude/history.jsonl` — prompt history
-- `~admin/.claude/debug/`, `file-history/`, `session-env/` — runtime caches
-- `~admin/.codex/history.jsonl`, `session_index.jsonl`, `logs*`, `state_*.sqlite*` — Codex history/runtime state
-- `~admin/.codex/cache/`, `tmp/`, `.tmp/`, `archived_sessions/`, `sessions/`, `shell_snapshots/` — Codex caches and transient state
-- `~admin/.ssh/`, `~admin/.aws/`, `~admin/.kube/` — sensitive credentials
-- Per-project MCP servers from `~admin/.claude.json` `projects.*` — these reference admin's paths; project-level MCP comes from `.mcp.json` in the workspace itself
-- Project trust entries from `~admin/.codex/config.toml` `[projects."..."]` — these reference the source user's paths and must be dropped
+`~/.env`, `~/.ssh`, `~/.aws`, `~/.kube`, session histories, debug caches, sqlite DBs, per-project configs, Codex trusted project entries.
+
+---
+
+## Authentication
+
+Two modes, mutually exclusive:
+
+### Keychain (recommended)
+
+```bash
+iso create acm --keychain
+```
+
+1. Reads `Claude Code-credentials` from admin's macOS Keychain
+2. Generates secure random password → `/etc/isolator/keychain/acm` (root:wheel 400)
+3. Creates login keychain for user, stores credential
+4. `iso acm claude` reads root-only password file, unlocks keychain before launching
+
+Agent never sees the keychain password. Encrypted at rest.
+
+### Token
+
+```bash
+iso create acm --token sk-ant-oat01-...
+```
+
+Writes token to `~/.claude/.credentials.json` (plaintext). Simpler, less secure.
+
+### Re-running create (refresh)
+
+- `iso create acm` — refreshes config only (shell, Claude, Codex settings)
+- `iso create acm --keychain` — refreshes config + re-copies credentials
 
 ---
 
 ## Isolator profile
 
-`/etc/isolator/profile` — sourced at end of slot's `.bash_profile`:
+`/etc/isolator/profile` — sourced from all slot rc files:
 
 ```bash
-# Auth keys
-[[ -f "$HOME/.env" ]] && source "$HOME/.env"
+# Keychain unlocked by iso script (password in /etc/isolator/keychain/)
 
-# Override PATH — global tools read-only, local installs in home
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+# PATH — prepend local installs, ensure homebrew
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
+[[ ":$PATH:" != *":/opt/homebrew/bin:"* ]] && export PATH="/opt/homebrew/bin:$PATH"
 
 # npm — local installs, no postinstall hooks
 export NPM_CONFIG_PREFIX="$HOME/.npm-global"
@@ -161,87 +183,87 @@ export NPM_CONFIG_ignore_scripts=true
 # pip — user installs only
 export PIP_USER=1
 export PYTHONUSERBASE="$HOME/.local"
+
+# Docker — per-user isolated network
+export DOCKER_NETWORK="iso-$(whoami)"
+
+# Bypass permissions — fallback for interactive shells
+alias claude='claude --permission-mode bypassPermissions'
 ```
 
 ---
 
-## apply-pf
+## Network isolation
 
-Reads config, resolves hostnames via `socket.getaddrinfo()`, generates pf anchor, loads it.
+### Layer 1: macOS pf (host processes)
 
-### Generated output (`/etc/pf.anchors/isolator`):
+`iso pf` resolves hostnames from config, generates per-user pf tables:
 
 ```
-table <slot-0-allowed> { 104.18.32.1, 104.18.33.2, 151.101.1.67, ... }
-table <slot-1-allowed> { 104.18.40.5, ... }
-table <slot-2-allowed> { 104.18.32.1, 104.18.33.2, ... }
+table <acm-allowed> { 104.18.32.1, 104.18.33.2, ... }
 
 block out proto tcp user { 600 601 602 }
 block out proto udp user { 600 601 602 }
 
-pass out proto tcp user 600 to <slot-0-allowed> port 443
-pass out proto tcp user 601 to <slot-1-allowed> port 443
-pass out proto tcp user 602 to <slot-2-allowed> port 443
-
+pass out proto tcp user 600 to <acm-allowed> port 443
 pass out proto udp user { 600 601 602 } to 127.0.0.1 port 53
 ```
 
-Each user's table = their `hosts` + `[global].hosts`, all resolved to IPs.
+### Layer 2: Docker iptables (container traffic)
 
-Also:
-- Adds anchor to `/etc/pf.conf` if missing
-- Runs `pfctl -ef /etc/pf.conf`
+Containers run inside OrbStack's Linux VM — macOS pf doesn't see them. `iso pf` also generates iptables rules in the `DOCKER-USER` chain:
 
----
-
-## Usage
-
-```bash
-# One-time: store keys
-echo "sk-ant-..." | sudo tee /etc/isolator/keys/anthropic
-sudo chmod 600 /etc/isolator/keys/anthropic
-
-# Create all users (copies from admin by default)
-sudo create-user --all
-
-# Create one user copying from admin
-sudo create-user slot-0
-
-# Create user copying from a customized slot
-sudo create-user slot-2 --from slot-0
-
-# Load firewall
-sudo apply-pf
-
-# Run claude
-sudo -u slot-0 -i claude
-
-# Run codex
-sudo -u slot-1 -i codex
-
-# Read slot's work
-cat /Users/slot-0/workspace/main.py
-
-# Refresh firewall after DNS changes
-sudo apply-pf
 ```
+ACCEPT  172.30.0.0/24 → 172.30.0.0/24       (container-to-container)
+ACCEPT  172.30.0.0/24 → 0.0.0.0/0 :53       (DNS)
+ACCEPT  172.30.0.0/24 → <allowed-ips> :443   (whitelisted hosts)
+DROP    172.30.0.0/24 → 0.0.0.0/0            (everything else)
+```
+
+Rules applied via `nsenter` into Docker's network namespace using `nicolaka/netshoot`.
+
+### Docker socket access
+
+OrbStack's socket (`~/.orbstack/run/docker.sock`) is inside admin's home (chmod 700). A launchd daemon replaces the `/var/run/docker.sock` symlink with a hardlink — standard path, zero overhead, no proxy.
 
 ---
 
 ## Security model
 
-| Layer | Enforcement | Bypassable by slot? |
-|-------|------------|---------------------|
+| Layer | Mechanism | Bypassable? |
+|-------|-----------|:-:|
 | Filesystem | chmod 700 + root-set ACL | No |
-| Network | pf by UID | No (kernel) |
-| No sudo | No password, no sudoers entry | No |
+| Host network | pf by UID | No (kernel) |
+| Container network | Docker iptables by subnet | No (kernel) |
+| Privilege escalation | No password, no sudoers | No |
+| Config immutability | Root-owned, chmod 444 | No |
 | Admin home | chmod 700 (DAC) | No |
-| npm hooks | NPM_CONFIG_ignore_scripts | Yes (cosmetic) |
+| Shared tools | World-readable, not writable | No |
+| Auth (keychain) | macOS Keychain, root-only password | No |
+| Backup exclusion | tmutil addexclusion | N/A |
+
+---
+
+## Docker
+
+Per-user Docker networks with dedicated subnets (172.30.N.0/24). Created by `iso create`, firewalled by `iso pf`.
+
+`docker pull` works (daemon operation). Container egress restricted to same-subnet + DNS + whitelisted hosts.
+
+Docker socket: hardlink at `/var/run/docker.sock`, re-created by launchd when OrbStack restarts.
+
+See `specs/docker-security.md` for full threat model.
+
+---
+
+## Backups
+
+`iso create` auto-excludes user homes and `/etc/isolator/keychain/` from Time Machine. Agent work is ephemeral — push to git.
 
 ---
 
 ## Open questions
 
-1. **Home reset** — add `reset-user <name>` if needed between runs.
-2. **Workspace sharing** — if agent needs admin's project dir, need ACL on that dir. Could be: `grant-workspace <user> <path>`.
-3. **Codex auth portability** — copied `auth.json` is assumed to remain valid across slot users on the same machine.
+1. **Workspace sharing** — if agent needs admin's project dir, `chown` or ACL on that dir.
+2. **Docker escape** — agent could create unrestricted Docker network or use `--net=host`. Future: Docker socket proxy to enforce policies.
+3. **Codex auth portability** — copied `auth.json` assumed valid across users on same machine.
