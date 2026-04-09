@@ -86,13 +86,29 @@ iso create --all --keychain-pass ttt        # create all from config
 
 If the user doesn't exist in `config.toml`, it's auto-added with the next available UID.
 
-What `create` does:
+### Re-running create (refresh)
 
-1. Creates a hidden macOS user via `dscl`
+`iso create` is idempotent — safe to re-run on existing users. It overwrites config files but preserves the user account and home contents.
+
+**Refresh config only** (shell rc, Claude/Codex settings, plugins):
+```bash
+iso create acm
+```
+Re-copies shell config, Claude settings, Codex config, and plugins from the source user. Useful after changing your `.bashrc`, Claude plugins, MCP servers, etc. Does not touch auth — existing keychain and `.env` stay as-is.
+
+**Refresh config + auth** (also re-copies credentials):
+```bash
+iso create acm --keychain-pass ttt
+```
+Same as above, plus re-copies your current OAuth credentials from keychain. Use after token rotation or when the agent gets 401 errors.
+
+### What `create` does
+
+1. Creates a hidden macOS user via `dscl` (skipped if exists)
 2. Sets up home with `chmod 700` and ACL for admin read/write access
 3. Detects source user's shell (bash/zsh) and copies the matching rc files
 4. Copies Claude Code config and curated Codex config from the source user
-5. Injects auth (keychain credentials or token to `.env`)
+5. Injects auth — only if `--keychain-pass` or `--token` is provided
 6. Normalizes shared-tool permissions for Homebrew `codex`
 7. Makes config files root-owned and read-only (agent can't modify)
 

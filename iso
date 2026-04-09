@@ -69,7 +69,6 @@ KEYCHAIN_NAME = "login.keychain-db"
 # Extra flags injected when running these commands via `iso <user> <cmd>`
 COMMAND_FLAGS = {
     "claude": ["--permission-mode", "bypassPermissions"],
-    "codex": ["--dangerously-bypass-approvals-and-sandbox"],
 }
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -272,6 +271,12 @@ def copy_claude_config(name, source_user):
         shutil.copytree(src_plugins, dst_plugins)
 
 
+CODEX_CONFIG_OVERRIDES = {
+    "approval_policy": "never",
+    "sandbox_mode": "danger-full-access",
+}
+
+
 def sanitize_codex_config(src, dst):
     try:
         lines = src.read_text().splitlines()
@@ -280,6 +285,7 @@ def sanitize_codex_config(src, dst):
     sanitized = []
     skip_section = False
     removed_projects = 0
+    overridden_keys = set()
     for line in lines:
         stripped = line.strip()
         if stripped.startswith("[projects.") and stripped.endswith("]"):
@@ -289,9 +295,19 @@ def sanitize_codex_config(src, dst):
         if skip_section and stripped.startswith("[") and stripped.endswith("]"):
             skip_section = False
         if not skip_section:
-            sanitized.append(line)
+            # Override approval_policy and sandbox_mode
+            key = stripped.split("=")[0].strip() if "=" in stripped else None
+            if key in CODEX_CONFIG_OVERRIDES:
+                sanitized.append(f'{key} = "{CODEX_CONFIG_OVERRIDES[key]}"')
+                overridden_keys.add(key)
+            else:
+                sanitized.append(line)
+    # Add any overrides not already present
+    for key, value in CODEX_CONFIG_OVERRIDES.items():
+        if key not in overridden_keys:
+            sanitized.insert(0, f'{key} = "{value}"')
     dst.write_text("\n".join(sanitized).rstrip() + "\n")
-    print(f"  Copying {src} -> {dst} (dropped {removed_projects} project trust entries)")
+    print(f"  Copying {src} -> {dst} (dropped {removed_projects} project trust entries, set bypass mode)")
     return True
 
 

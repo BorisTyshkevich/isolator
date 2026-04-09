@@ -10,9 +10,9 @@ fi
 # Auth keys
 [[ -f "$HOME/.env" ]] && source "$HOME/.env"
 
-# Global tools (read-only) + local installs in home
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+# Ensure core tools are in PATH, then prepend local installs
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
+[[ ":$PATH:" != *":/opt/homebrew/bin:"* ]] && export PATH="/opt/homebrew/bin:$PATH"
 
 # npm — local installs, no postinstall hooks
 export NPM_CONFIG_PREFIX="$HOME/.npm-global"
@@ -30,4 +30,3 @@ fi
 
 # Bypass permissions — fallback for interactive shells (iso user bash → claude)
 alias claude='claude --permission-mode bypassPermissions'
-alias codex='codex --dangerously-bypass-approvals-and-sandbox'
