@@ -517,6 +517,15 @@ def set_ownership(name):
             run(["chown", "-R", f"{name}:staff", str(path)])
 
 
+def exclude_from_backup(name):
+    """Exclude user home and keychain password from Time Machine."""
+    home = Path(f"/Users/{name}")
+    run(["tmutil", "addexclusion", str(home)], check=False)
+    if KEYCHAIN_PASS_DIR.exists():
+        run(["tmutil", "addexclusion", str(KEYCHAIN_PASS_DIR)], check=False)
+    print(f"  Excluded from Time Machine backup")
+
+
 # ── Create command ──────────────────────────────────────────────────────────
 
 def cmd_create(name, config, from_user=None):
@@ -556,6 +565,7 @@ def cmd_create(name, config, from_user=None):
     create_skeleton(name)
     ensure_shared_tool_access()
     set_ownership(name)
+    exclude_from_backup(name)
 
     print(f"=== Done: {name} ===")
 

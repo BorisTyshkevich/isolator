@@ -304,15 +304,15 @@ This is not Docker-as-sandbox. This is Docker-as-dependency.
 
 ---
 
-## Isolator + Docker: Solved with socat
+## Isolator + Docker: Hardlink the Socket
 
 OrbStack (or Docker Desktop) runs as the admin. The socket lives in `~/`.
-Isolated users can't reach it. Fix: **proxy the socket**.
+Isolated users can't reach it. Fix: **hardlink the socket**.
 
 ```bash
-# socat proxy — runs as launchd daemon
-socat UNIX-LISTEN:/var/run/docker-shared.sock,fork,group=staff,mode=770 \
-      UNIX-CONNECT:/var/run/docker.sock
+# launchd re-creates the link when OrbStack restarts
+ln /var/run/docker.sock /var/run/docker-shared.sock
+chmod 770 /var/run/docker-shared.sock
 ```
 
 Each isolated user gets `DOCKER_HOST` via the profile:
@@ -320,7 +320,23 @@ Each isolated user gets `DOCKER_HOST` via the profile:
 export DOCKER_HOST="unix:///var/run/docker-shared.sock"
 ```
 
-**Result:** agents run `docker`, `docker-compose`, build images, start services — all from inside their sandbox. No VM nesting. No privilege escalation.
+**Result:** agents run `docker`, `docker-compose`, build images, start services — all from inside their sandbox. Zero overhead. No proxy. No VM nesting.
+
+---
+
+## Backups: Don't Leak Your Chat Transcripts
+
+Time Machine runs as **root** — it ignores all isolation and backs up everything.
+
+By default, every agent session — chat history, credentials, workspace — ends up on your backup drive. Multiple sandboxed users **multiply** the problem.
+
+`iso create` auto-excludes each sandboxed home from Time Machine:
+
+```bash
+tmutil addexclusion /Users/acm    # runs automatically
+```
+
+Your agent's work is ephemeral. **Push to git, don't rely on backups.**
 
 ---
 
