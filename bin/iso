@@ -696,12 +696,10 @@ def main():
 
     subcmd = sys.argv[1]
 
-    # ── iso <user> <command> [args...] ──
+    # ── iso <user> [command] [args...] ──
     if subcmd not in SUBCOMMANDS and not subcmd.startswith("-"):
-        if len(sys.argv) < 3:
-            print(f"Usage: iso <user> <command> [args...]")
-            sys.exit(1)
-        cmd_run(subcmd, sys.argv[2], sys.argv[3:])
+        cmd = sys.argv[2] if len(sys.argv) >= 3 else "bash"
+        cmd_run(subcmd, cmd, sys.argv[3:])
         return
 
     # Everything below requires root
