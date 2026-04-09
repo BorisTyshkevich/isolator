@@ -2,41 +2,42 @@
 marp: true
 theme: default
 paginate: true
-backgroundColor: #1a1a2e
-color: #eee
+backgroundColor: #ffffff
+color: #1d1d1f
 style: |
   section {
     font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
     font-size: 28px;
   }
   h1, h2 {
-    color: #e94560;
+    color: #0071e3;
   }
   code {
-    background: #16213e;
-    color: #0ff;
+    background: #f5f5f7;
+    color: #d63384;
     font-size: 22px;
   }
   pre {
-    background: #16213e !important;
+    background: #f5f5f7 !important;
     border-radius: 8px;
     font-size: 20px;
+    color: #1d1d1f;
   }
   table {
     font-size: 24px;
   }
   th {
-    background: #e94560;
+    background: #0071e3;
     color: #fff;
   }
   td {
-    background: #16213e;
+    background: #f5f5f7;
   }
   strong {
-    color: #e94560;
+    color: #e3002b;
   }
   a {
-    color: #0ff;
+    color: #0071e3;
   }
   section.lead h1 {
     font-size: 52px;
@@ -45,7 +46,7 @@ style: |
   section.lead p {
     text-align: center;
     font-size: 24px;
-    color: #aaa;
+    color: #86868b;
   }
 ---
 
