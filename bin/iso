@@ -41,6 +41,8 @@ PROFILE_PATH = Path("/etc/isolator/profile")
 ANCHOR_PATH = Path("/etc/pf.anchors/isolator")
 PF_CONF = Path("/etc/pf.conf")
 BASE_UID = 600
+DOCKER_SUBNET_BASE = "172.30"  # per-user: 172.30.0.0/24, 172.30.1.0/24, ...
+NETSHOOT_IMAGE = "nicolaka/netshoot"
 
 SHELL_RC_FILES = {
     "bash": [".bash_profile", ".bashrc"],
@@ -526,6 +528,26 @@ def exclude_from_backup(name):
     print(f"  Excluded from Time Machine backup")
 
 
+def user_subnet(config, name):
+    """Return the Docker subnet for a user based on position in config."""
+    users = list(config.get("users", {}).keys())
+    idx = users.index(name) if name in users else len(users)
+    return f"{DOCKER_SUBNET_BASE}.{idx}.0/24"
+
+
+def create_docker_network(name, config):
+    """Create a per-user Docker network with a dedicated subnet."""
+    net_name = f"iso-{name}"
+    subnet = user_subnet(config, name)
+    # Check if network exists
+    r = run(["docker", "network", "inspect", net_name], check=False)
+    if r.returncode == 0:
+        print(f"  Docker network {net_name} already exists")
+        return
+    run(["docker", "network", "create", f"--subnet={subnet}", net_name], check=False)
+    print(f"  Created Docker network {net_name} ({subnet})")
+
+
 # ── Create command ──────────────────────────────────────────────────────────
 
 def cmd_create(name, config, from_user=None):
@@ -563,6 +585,7 @@ def cmd_create(name, config, from_user=None):
     copy_codex_config(name, source)
     inject_auth(name, user_config)
     create_skeleton(name)
+    create_docker_network(name, config)
     ensure_shared_tool_access()
     set_ownership(name)
     exclude_from_backup(name)
@@ -658,25 +681,82 @@ def ensure_pf_conf():
         PF_CONF.write_text(content + additions)
 
 
+def generate_docker_iptables(config):
+    """Generate iptables rules for Docker container egress filtering."""
+    users = config.get("users", {})
+    global_hosts = config.get("global", {}).get("hosts", [])
+    rules = []
+
+    # Flush DOCKER-USER chain
+    rules.append("iptables -F DOCKER-USER")
+
+    for name, user_config in users.items():
+        subnet = user_subnet(config, name)
+        hosts = user_config.get("hosts", []) + global_hosts
+        ips = resolve_hosts(hosts)
+
+        # Allow container-to-container on same subnet
+        rules.append(f"iptables -A DOCKER-USER -s {subnet} -d {subnet} -j ACCEPT")
+        # Allow DNS
+        rules.append(f"iptables -A DOCKER-USER -s {subnet} -p udp --dport 53 -j ACCEPT")
+        # Allow whitelisted IPs
+        for ip in ips:
+            rules.append(f"iptables -A DOCKER-USER -s {subnet} -d {ip} -p tcp --dport 443 -j ACCEPT")
+        # Drop everything else from this subnet
+        rules.append(f"iptables -A DOCKER-USER -s {subnet} -j DROP")
+
+    # Default: allow all other Docker traffic
+    rules.append("iptables -A DOCKER-USER -j ACCEPT")
+    return rules
+
+
+def apply_docker_iptables(rules, dry_run=False):
+    """Apply iptables rules inside the Docker VM via nsenter."""
+    script = " && ".join(rules)
+
+    if dry_run:
+        print("\n--- Docker iptables rules (dry run) ---")
+        for r in rules:
+            print(f"  {r}")
+        return
+
+    print("\n  Applying Docker iptables rules...")
+    # Ensure netshoot image is available
+    run(["docker", "pull", "-q", NETSHOOT_IMAGE], check=False)
+    r = subprocess.run(
+        ["docker", "run", "--rm", "--privileged", "--pid=host", "--network=host",
+         NETSHOOT_IMAGE, "sh", "-c", f"nsenter -t 1 -n sh -c '{script}'"],
+        capture_output=True, text=True)
+    if r.returncode != 0:
+        print(f"  WARNING: Docker iptables failed: {r.stderr.strip()}")
+    else:
+        print("  Docker iptables rules loaded")
+
+
 def cmd_pf(config, dry_run=False):
+    # macOS pf rules
     anchor = generate_anchor(config)
     if not anchor:
         return
     if dry_run:
-        print("\n--- Generated anchor (dry run) ---")
+        print("\n--- Generated pf anchor (dry run) ---")
         print(anchor)
-        return
-    print(f"\n  Writing {ANCHOR_PATH}")
-    ANCHOR_PATH.parent.mkdir(parents=True, exist_ok=True)
-    ANCHOR_PATH.write_text(anchor)
-    ensure_pf_conf()
-    print("  Loading pf rules...")
-    r = subprocess.run(["pfctl", "-ef", str(PF_CONF)],
-                       capture_output=True, text=True)
-    if r.returncode != 0:
-        print(f"  ERROR: pfctl failed: {r.stderr}")
-        sys.exit(1)
-    print("  pf rules loaded")
+    else:
+        print(f"\n  Writing {ANCHOR_PATH}")
+        ANCHOR_PATH.parent.mkdir(parents=True, exist_ok=True)
+        ANCHOR_PATH.write_text(anchor)
+        ensure_pf_conf()
+        print("  Loading pf rules...")
+        r = subprocess.run(["pfctl", "-ef", str(PF_CONF)],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"  ERROR: pfctl failed: {r.stderr}")
+            sys.exit(1)
+        print("  pf rules loaded")
+
+    # Docker iptables rules
+    docker_rules = generate_docker_iptables(config)
+    apply_docker_iptables(docker_rules, dry_run)
 
 
 # ── Run command ─────────────────────────────────────────────────────────────

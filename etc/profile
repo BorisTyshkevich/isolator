@@ -16,5 +16,8 @@ export NPM_CONFIG_ignore_scripts=true
 export PIP_USER=1
 export PYTHONUSERBASE="$HOME/.local"
 
+# Docker — per-user isolated network
+export DOCKER_NETWORK="iso-$(whoami)"
+
 # Bypass permissions — fallback for interactive shells (iso user bash → claude)
 alias claude='claude --permission-mode bypassPermissions'

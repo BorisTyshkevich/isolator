@@ -293,34 +293,41 @@ AI agents don't just write code — they **build and test** it.
 ```bash
 docker-compose up -d    # start ClickHouse, Postgres, Redis
 npm test                # integration tests hit real services
-docker logs clickhouse  # debug failing test
 ```
 
-This is not Docker-as-sandbox. This is Docker-as-dependency.
+**The problem:** Docker containers run inside a Linux VM, not as the sandboxed user.
+macOS `pf` rules (by UID) don't apply. An agent can `docker run curl evil.com`.
 
-**The Docker-in-Docker problem:**
-- VM-based sandboxes can't easily nest Docker
-- Docker socket access = root-equivalent privilege
-- Giving an agent `/var/run/docker.sock` defeats isolation
+**Two-layer solution:**
+
+| Layer | Where | Restricts |
+|-------|-------|-----------|
+| macOS `pf` | Host kernel | Host processes (by UID) |
+| Docker `iptables` | OrbStack VM | Container traffic (by subnet) |
 
 ---
 
-## Isolator + Docker: Hardlink the Socket
+## Docker Network Isolation
 
-OrbStack (or Docker Desktop) socket lives in `~/` — isolated users can't reach it.
-`/var/run/docker.sock` is just a symlink there. Fix: **replace symlink with hardlink**.
+Per-user Docker networks with iptables egress rules inside the VM:
 
-```bash
-# launchd watches and re-links when OrbStack restarts
-target=$(readlink /var/run/docker.sock)
-rm /var/run/docker.sock
-ln "$target" /var/run/docker.sock
+```
+iso-acm network (172.30.0.0/24)
+  ├── ACCEPT  container → container     ✅ same subnet
+  ├── ACCEPT  container → DNS           ✅ port 53
+  ├── ACCEPT  container → whitelisted   ✅ from config.toml
+  └── DROP    container → *             ❌ everything else
 ```
 
-Standard `/var/run/docker.sock` path — no `DOCKER_HOST` needed.
-Containers, testcontainers, ryuk — everything works with default paths.
+`docker pull` still works — it's a **daemon** operation, not container traffic.
 
-**Result:** agents run `docker`, `docker-compose`, build images, start services — all from inside their sandbox. Zero overhead. No proxy. No VM nesting.
+```bash
+docker pull clickhouse/clickhouse-server   # ✅ daemon pulls
+docker run --network=iso-acm clickhouse    # ✅ starts
+# container curl evil.com                  # ❌ blocked by iptables
+```
+
+`iso pf` generates **both** macOS pf rules and Docker iptables rules from the same config.
 
 ---
 
