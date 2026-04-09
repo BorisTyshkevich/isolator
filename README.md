@@ -31,14 +31,14 @@ No third-party Python packages needed — stdlib only.
 ```bash
 # 1. Install config and profile
 sudo mkdir -p /etc/isolator
-sudo cp config.toml /etc/isolator/config.toml
-sudo cp profile /etc/isolator/profile
+sudo cp etc/config.toml /etc/isolator/config.toml
+sudo cp etc/profile /etc/isolator/profile
 sudo chmod 644 /etc/isolator/config.toml /etc/isolator/profile
 
 # 2. Edit config.toml — set your admin username
 
 # 3. Install iso to PATH
-sudo cp iso /usr/local/bin/iso
+sudo cp bin/iso /usr/local/bin/iso
 
 # 4. Create users (auto-added to config.toml if not present)
 iso create acm --keychain-pass ttt
@@ -192,12 +192,15 @@ Users are auto-added to config when created via `iso create <name>`.
 
 ## Files
 
-| File | Purpose |
+| Path | Purpose |
 |------|---------|
-| `iso` | Unified command: create, delete, run, firewall |
-| `config.toml` | User definitions, allowed hosts, optional auth key paths |
-| `profile` | Shell profile sourced by all isolated users |
-| `spec.md` | Design spec |
+| `bin/iso` | Unified command: create, delete, run, firewall |
+| `etc/config.toml` | User definitions, allowed hosts, optional auth key paths |
+| `etc/profile` | Shell profile sourced by all isolated users |
+| `etc/com.isolator.docker-proxy.plist` | launchd plist for Docker socket proxy |
+| `specs/spec.md` | Design spec (macOS) |
+| `specs/spec-linux.md` | Design spec (Linux) |
+| `slides/` | Presentation slides (Marp source + HTML + PDF) |
 
 ## Security model
 
@@ -254,7 +257,7 @@ OrbStack's docker socket lives inside the admin's home, which isolated users can
 ```bash
 # Install (one-time)
 brew install socat
-sudo cp com.isolator.docker-proxy.plist /Library/LaunchDaemons/
+sudo cp etc/com.isolator.docker-proxy.plist /Library/LaunchDaemons/
 sudo launchctl load /Library/LaunchDaemons/com.isolator.docker-proxy.plist
 ```
 
