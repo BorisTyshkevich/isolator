@@ -1,0 +1,38 @@
+admin = "bvt"
+
+[global]
+hosts = [
+    "registry.npmjs.org",
+    "pypi.org",
+    "files.pythonhosted.org",
+]
+
+[users.slot-0]
+uid = 600
+hosts = [
+    "api.anthropic.com",
+    "sentry.io",
+]
+
+[users.slot-0.auth]
+ANTHROPIC_API_KEY = "/etc/isolator/keys/anthropic"
+
+[users.slot-1]
+uid = 601
+hosts = [
+    "api.openai.com",
+]
+
+[users.slot-1.auth]
+OPENAI_API_KEY = "/etc/isolator/keys/openai"
+
+[users.slot-2]
+uid = 602
+from = "slot-0"
+hosts = [
+    "api.anthropic.com",
+    "mcp.demo.altinity.cloud",
+]
+
+[users.slot-2.auth]
+ANTHROPIC_API_KEY = "/etc/isolator/keys/anthropic"

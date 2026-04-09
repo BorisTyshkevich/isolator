@@ -1,0 +1,322 @@
+#!/usr/bin/env python3
+"""create-user: Create an isolated macOS user for AI coding agents.
+
+Usage:
+    sudo create-user <name>              # create one user (config from admin)
+    sudo create-user <name> --from USER  # create one user (config from USER)
+    sudo create-user --all               # create all users from config
+"""
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+CONFIG_PATH = Path("/etc/isolator/config.toml")
+PROFILE_PATH = Path("/etc/isolator/profile")
+
+SHELL_RC_FILES = {
+    "bash": [".bash_profile", ".bashrc"],
+    "zsh": [".zprofile", ".zshrc"],
+}
+
+# Login rc file per shell — where we append `source /etc/isolator/profile`
+SHELL_LOGIN_RC = {
+    "bash": ".bash_profile",
+    "zsh": ".zprofile",
+}
+
+CLAUDE_SETTINGS_OVERRIDES = {
+    "defaultMode": "bypassPermissions",
+    "skipDangerousModePermissionPrompt": True,
+}
+
+
+def run(cmd, check=True):
+    """Run a shell command."""
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if check and r.returncode != 0:
+        print(f"  ERROR: {' '.join(cmd)}")
+        if r.stderr:
+            print(f"         {r.stderr.strip()}")
+        r.check_returncode()
+    return r
+
+
+def load_config():
+    with open(CONFIG_PATH, "rb") as f:
+        return tomllib.load(f)
+
+
+def dscl_read(user, key):
+    """Read a dscl property, return value or None."""
+    r = run(["dscl", ".", "-read", f"/Users/{user}", key], check=False)
+    if r.returncode != 0:
+        return None
+    # dscl output: "Key: value" or multiline
+    for line in r.stdout.strip().splitlines():
+        if line.startswith(f"{key}:"):
+            return line.split(":", 1)[1].strip()
+    return None
+
+
+def user_exists(name):
+    r = run(["dscl", ".", "-read", f"/Users/{name}"], check=False)
+    return r.returncode == 0
+
+
+def detect_shell(user):
+    """Detect user's shell, return 'bash' or 'zsh'."""
+    shell = dscl_read(user, "UserShell") or "/bin/zsh"
+    if "zsh" in shell:
+        return "zsh", shell
+    return "bash", shell
+
+
+def create_macos_user(name, uid, shell_path):
+    """Create a hidden macOS user via dscl."""
+    home = f"/Users/{name}"
+    print(f"  Creating macOS user {name} (uid={uid}, shell={shell_path})")
+
+    run(["dscl", ".", "-create", f"/Users/{name}"])
+    run(["dscl", ".", "-create", f"/Users/{name}", "UserShell", shell_path])
+    run(["dscl", ".", "-create", f"/Users/{name}", "RealName", f"Isolator {name}"])
+    run(["dscl", ".", "-create", f"/Users/{name}", "UniqueID", str(uid)])
+    run(["dscl", ".", "-create", f"/Users/{name}", "PrimaryGroupID", "20"])
+    run(["dscl", ".", "-create", f"/Users/{name}", "NFSHomeDirectory", home])
+    run(["dscl", ".", "-create", f"/Users/{name}", "IsHidden", "1"])
+
+
+def setup_home(name, admin):
+    """Create home dir with proper permissions and ACL."""
+    home = Path(f"/Users/{name}")
+    print(f"  Setting up home {home}")
+
+    home.mkdir(mode=0o700, exist_ok=True)
+    run(["chown", f"{name}:staff", str(home)])
+    run(["chmod", "700", str(home)])
+
+    # ACL — admin can read everything, inheritable
+    run(["chmod", "+a",
+         f"{admin} allow read,list,search,readattr,readextattr,readsecurity,file_inherit,directory_inherit",
+         str(home)])
+
+
+def copy_shell_config(name, source_user, shell_type):
+    """Copy shell rc files from source user, append isolator profile source."""
+    home = Path(f"/Users/{name}")
+    source_home = Path(f"/Users/{source_user}")
+    rc_files = SHELL_RC_FILES.get(shell_type, [])
+    login_rc = SHELL_LOGIN_RC.get(shell_type, ".bash_profile")
+
+    for rc in rc_files:
+        src = source_home / rc
+        dst = home / rc
+        if src.exists():
+            print(f"  Copying {src} -> {dst}")
+            shutil.copy2(src, dst)
+        else:
+            # Create empty file so we can append to login rc
+            if rc == login_rc:
+                dst.touch()
+
+    # Append isolator profile source to login rc
+    login_rc_path = home / login_rc
+    if not login_rc_path.exists():
+        login_rc_path.touch()
+
+    content = login_rc_path.read_text()
+    source_line = f"\nsource {PROFILE_PATH}\n"
+    if str(PROFILE_PATH) not in content:
+        print(f"  Appending isolator profile to {login_rc_path}")
+        login_rc_path.write_text(content + source_line)
+
+
+def copy_claude_config(name, source_user):
+    """Copy Claude Code config from source user."""
+    home = Path(f"/Users/{name}")
+    source_home = Path(f"/Users/{source_user}")
+
+    # ~/.claude/settings.json — copy and merge overrides
+    claude_dir = home / ".claude"
+    claude_dir.mkdir(exist_ok=True)
+
+    src_settings = source_home / ".claude" / "settings.json"
+    dst_settings = claude_dir / "settings.json"
+
+    settings = {}
+    if src_settings.exists():
+        print(f"  Copying {src_settings}")
+        settings = json.loads(src_settings.read_text())
+
+    settings.update(CLAUDE_SETTINGS_OVERRIDES)
+    dst_settings.write_text(json.dumps(settings, indent=2) + "\n")
+
+    # ~/.claude.json — extract only mcpServers from source
+    src_claude_json = source_home / ".claude.json"
+    dst_claude_json = home / ".claude.json"
+
+    mcp_servers = {}
+    if src_claude_json.exists():
+        try:
+            data = json.loads(src_claude_json.read_text())
+            mcp_servers = data.get("mcpServers", {})
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    if mcp_servers:
+        print(f"  Copying MCP servers: {list(mcp_servers.keys())}")
+    dst_claude_json.write_text(json.dumps({"mcpServers": mcp_servers}, indent=2) + "\n")
+
+    # ~/.claude/skills — copy symlink
+    src_skills = source_home / ".claude" / "skills"
+    dst_skills = claude_dir / "skills"
+    if src_skills.is_symlink():
+        target = os.readlink(src_skills)
+        print(f"  Linking skills -> {target}")
+        if dst_skills.exists() or dst_skills.is_symlink():
+            dst_skills.unlink()
+        os.symlink(target, dst_skills)
+
+    # ~/.claude/plugins/ — copy dir
+    src_plugins = source_home / ".claude" / "plugins"
+    dst_plugins = claude_dir / "plugins"
+    if src_plugins.is_dir():
+        print(f"  Copying plugins/")
+        if dst_plugins.exists():
+            shutil.rmtree(dst_plugins)
+        shutil.copytree(src_plugins, dst_plugins)
+
+
+def inject_auth(name, user_config):
+    """Write .env file with auth keys from config."""
+    home = Path(f"/Users/{name}")
+    auth = user_config.get("auth", {})
+    if not auth:
+        return
+
+    env_file = home / ".env"
+    lines = ["# Isolator auth — root-owned, read-only"]
+    for var, keyfile in auth.items():
+        keypath = Path(keyfile)
+        if not keypath.exists():
+            print(f"  WARNING: key file {keypath} not found, skipping {var}")
+            continue
+        value = keypath.read_text().strip()
+        lines.append(f'export {var}="{value}"')
+        print(f"  Injecting {var} from {keypath}")
+
+    env_file.write_text("\n".join(lines) + "\n")
+
+
+def create_skeleton(name):
+    """Create standard directory skeleton."""
+    home = Path(f"/Users/{name}")
+    for d in [".local/bin", ".local/lib", ".npm-global", ".cache", "workspace"]:
+        (home / d).mkdir(parents=True, exist_ok=True)
+
+
+def set_ownership(name):
+    """Set final ownership: config files root-owned 444, home dirs owned by user."""
+    home = Path(f"/Users/{name}")
+
+    # Config files — root-owned, read-only
+    for f in [".bash_profile", ".bashrc", ".zprofile", ".zshrc",
+              ".env", ".claude/settings.json", ".claude.json"]:
+        path = home / f
+        if path.exists():
+            run(["chown", "root:wheel", str(path)])
+            run(["chmod", "444", str(path)])
+
+    # .claude dir — root-owned but traversable
+    claude_dir = home / ".claude"
+    if claude_dir.exists():
+        run(["chown", "root:wheel", str(claude_dir)])
+        run(["chmod", "755", str(claude_dir)])
+
+    # plugins — root-owned
+    plugins_dir = home / ".claude" / "plugins"
+    if plugins_dir.exists():
+        run(["chown", "-R", "root:wheel", str(plugins_dir)])
+        run(["chmod", "-R", "755", str(plugins_dir)])
+
+    # Everything else — owned by slot user
+    for d in [".local", ".npm-global", ".cache", "workspace"]:
+        path = home / d
+        if path.exists():
+            run(["chown", "-R", f"{name}:staff", str(path)])
+
+
+def create_user(name, config, from_user=None):
+    """Create one isolated user."""
+    users = config.get("users", {})
+    admin = config["admin"]
+
+    if name not in users:
+        print(f"Error: {name} not found in config")
+        sys.exit(1)
+
+    user_config = users[name]
+    uid = user_config["uid"]
+
+    # Resolve source user: --from > config from > admin
+    source = from_user or user_config.get("from", admin)
+
+    print(f"\n=== Creating {name} (uid={uid}, from={source}) ===")
+
+    # Ensure admin home is not world-readable
+    admin_home = Path(f"/Users/{admin}")
+    if admin_home.stat().st_mode & 0o077:
+        print(f"  Locking admin home {admin_home} to 700")
+        run(["chmod", "700", str(admin_home)])
+
+    if user_exists(name):
+        print(f"  User {name} already exists, skipping dscl creation")
+    else:
+        shell_type, shell_path = detect_shell(source)
+        create_macos_user(name, uid, shell_path)
+
+    shell_type, shell_path = detect_shell(source)
+
+    setup_home(name, admin)
+    copy_shell_config(name, source, shell_type)
+    copy_claude_config(name, source)
+    inject_auth(name, user_config)
+    create_skeleton(name)
+    set_ownership(name)
+
+    print(f"=== Done: {name} ===")
+
+
+def main():
+    if os.geteuid() != 0:
+        print("Error: must run as root (sudo)")
+        sys.exit(1)
+
+    if len(sys.argv) < 2:
+        print(__doc__)
+        sys.exit(1)
+
+    config = load_config()
+
+    if sys.argv[1] == "--all":
+        for name in config.get("users", {}):
+            create_user(name, config)
+    else:
+        name = sys.argv[1]
+        from_user = None
+        if "--from" in sys.argv:
+            idx = sys.argv.index("--from")
+            if idx + 1 < len(sys.argv):
+                from_user = sys.argv[idx + 1]
+            else:
+                print("Error: --from requires a username")
+                sys.exit(1)
+        create_user(name, config, from_user)
+
+
+if __name__ == "__main__":
+    main()
