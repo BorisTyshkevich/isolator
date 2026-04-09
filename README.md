@@ -249,20 +249,17 @@ Users read `/opt/homebrew` and `/usr/local` but can't write. Upgrade a tool once
 
 ## Docker (OrbStack)
 
-OrbStack's docker socket lives inside the admin's home, which isolated users can't access. Isolator includes a socat proxy that exposes a shared socket:
+OrbStack's docker socket lives inside the admin's home, which isolated users can't access. Isolator creates a hardlink at `/var/run/docker-shared.sock` that bypasses path traversal — zero overhead, direct connection to the daemon.
 
 ```bash
 # Install (one-time)
-brew install socat
 sudo cp etc/com.isolator.docker-proxy.plist /Library/LaunchDaemons/
 sudo launchctl load /Library/LaunchDaemons/com.isolator.docker-proxy.plist
 ```
 
-This creates `/var/run/docker-shared.sock` (group `staff`, mode `770`) that proxies to the real docker socket. The isolator profile auto-sets `DOCKER_HOST` when the shared socket exists.
+The launchd job re-creates the hardlink whenever OrbStack recreates the socket (via `WatchPaths`). The isolator profile auto-sets `DOCKER_HOST` when the shared socket exists.
 
 ```bash
 # Verify
 iso click docker ps
 ```
-
-The proxy starts automatically on boot and restarts when OrbStack recreates the socket (via `PathState` watch on `/var/run/docker.sock`).

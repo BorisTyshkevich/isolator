@@ -3,24 +3,20 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.isolator.docker-proxy</string>
+    <string>com.isolator.docker-link</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/opt/homebrew/bin/socat</string>
-        <string>UNIX-LISTEN:/var/run/docker-shared.sock,fork,group=staff,mode=770</string>
-        <string>UNIX-CONNECT:/var/run/docker.sock</string>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>rm -f /var/run/docker-shared.sock; ln /var/run/docker.sock /var/run/docker-shared.sock; chmod 770 /var/run/docker-shared.sock</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
-    <key>KeepAlive</key>
-    <dict>
-        <key>PathState</key>
-        <dict>
-            <key>/var/run/docker.sock</key>
-            <true/>
-        </dict>
-    </dict>
+    <key>WatchPaths</key>
+    <array>
+        <string>/var/run/docker.sock</string>
+    </array>
     <key>StandardErrorPath</key>
-    <string>/var/log/isolator-docker-proxy.log</string>
+    <string>/var/log/isolator-docker-link.log</string>
 </dict>
 </plist>
