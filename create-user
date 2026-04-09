@@ -2,9 +2,16 @@
 """create-user: Create an isolated macOS user for AI coding agents.
 
 Usage:
-    sudo create-user <name>              # create one user (config from admin)
-    sudo create-user <name> --from USER  # create one user (config from USER)
-    sudo create-user --all               # create all users from config
+    sudo create-user <name>                            # create, no auth
+    sudo create-user <name> --from USER                # copy config from USER
+    sudo create-user <name> --token TOKEN              # inject CLAUDE_CODE_OAUTH_TOKEN
+    sudo create-user <name> --keychain-pass PASS       # copy admin keychain credentials
+    sudo create-user --all --token TOKEN               # create all with token
+    sudo create-user --all --keychain-pass PASS        # create all with keychain
+
+Auth can also be set via env vars:
+    CLAUDE_CODE_OAUTH_TOKEN=...  sudo create-user <name>
+    ISOLATOR_KEYCHAIN_PASS=...   sudo create-user <name>
 """
 
 import json
@@ -35,11 +42,51 @@ CLAUDE_SETTINGS_OVERRIDES = {
 }
 
 
+CODEX_COPY_FILES = [
+    "auth.json",
+    "AGENTS.md",
+]
+
+CODEX_COPY_DIRS = [
+    "plugins",
+    "skills",
+    "agents",
+]
+
+SHARED_TOOLS = [
+    {
+        "name": "codex",
+        "bin": Path("/opt/homebrew/bin/codex"),
+        "package_dir": Path("/opt/homebrew/lib/node_modules/@openai/codex"),
+    },
+]
+
+
 def run(cmd, check=True):
     """Run a shell command."""
     r = subprocess.run(cmd, capture_output=True, text=True)
     if check and r.returncode != 0:
         print(f"  ERROR: {' '.join(cmd)}")
+        if r.stderr:
+            print(f"         {r.stderr.strip()}")
+        r.check_returncode()
+    return r
+
+
+def run_as(user, cmd, check=True):
+    """Run a command as another user. We're already root, so just switch uid/gid."""
+    import pwd
+    pw = pwd.getpwnam(user)
+    home = pw.pw_dir
+
+    def switch_user():
+        os.setgid(pw.pw_gid)
+        os.setuid(pw.pw_uid)
+        os.environ["HOME"] = home
+
+    r = subprocess.run(cmd, capture_output=True, text=True, preexec_fn=switch_user)
+    if check and r.returncode != 0:
+        print(f"  ERROR (as {user}): {' '.join(cmd)}")
         if r.stderr:
             print(f"         {r.stderr.strip()}")
         r.check_returncode()
@@ -123,16 +170,16 @@ def copy_shell_config(name, source_user, shell_type):
             if rc == login_rc:
                 dst.touch()
 
-    # Append isolator profile source to login rc
-    login_rc_path = home / login_rc
-    if not login_rc_path.exists():
-        login_rc_path.touch()
-
-    content = login_rc_path.read_text()
+    # Append isolator profile source to all rc files (login + interactive)
     source_line = f"\nsource {PROFILE_PATH}\n"
-    if str(PROFILE_PATH) not in content:
-        print(f"  Appending isolator profile to {login_rc_path}")
-        login_rc_path.write_text(content + source_line)
+    for rc in rc_files:
+        rc_path = home / rc
+        if not rc_path.exists():
+            rc_path.touch()
+        content = rc_path.read_text()
+        if str(PROFILE_PATH) not in content:
+            print(f"  Appending isolator profile to {rc_path}")
+            rc_path.write_text(content + source_line)
 
 
 def copy_claude_config(name, source_user):
@@ -155,21 +202,42 @@ def copy_claude_config(name, source_user):
     settings.update(CLAUDE_SETTINGS_OVERRIDES)
     dst_settings.write_text(json.dumps(settings, indent=2) + "\n")
 
+
     # ~/.claude.json — extract only mcpServers from source
     src_claude_json = source_home / ".claude.json"
     dst_claude_json = home / ".claude.json"
 
-    mcp_servers = {}
+    # Keys to copy from source .claude.json
+    CLAUDE_JSON_KEYS = [
+        "mcpServers",
+        "oauthAccount",
+        "hasCompletedOnboarding",
+        "lastOnboardingVersion",
+        "numStartups",
+        "firstStartTime",
+        "migrationVersion",
+        "opusProMigrationComplete",
+        "sonnet45MigrationComplete",
+        "sonnet1m45MigrationComplete",
+        "opus45MigrationComplete",
+        "thinkingMigrationComplete",
+    ]
+
+    claude_json_data = {}
     if src_claude_json.exists():
         try:
             data = json.loads(src_claude_json.read_text())
-            mcp_servers = data.get("mcpServers", {})
+            for key in CLAUDE_JSON_KEYS:
+                if key in data:
+                    claude_json_data[key] = data[key]
+            if "mcpServers" in claude_json_data:
+                print(f"  Copying MCP servers: {list(claude_json_data['mcpServers'].keys())}")
+            if "oauthAccount" in claude_json_data:
+                print(f"  Copying OAuth account: {claude_json_data['oauthAccount'].get('emailAddress', '?')}")
         except (json.JSONDecodeError, KeyError):
             pass
 
-    if mcp_servers:
-        print(f"  Copying MCP servers: {list(mcp_servers.keys())}")
-    dst_claude_json.write_text(json.dumps({"mcpServers": mcp_servers}, indent=2) + "\n")
+    dst_claude_json.write_text(json.dumps(claude_json_data, indent=2) + "\n")
 
     # ~/.claude/skills — copy symlink
     src_skills = source_home / ".claude" / "skills"
@@ -191,15 +259,189 @@ def copy_claude_config(name, source_user):
         shutil.copytree(src_plugins, dst_plugins)
 
 
+def copy_path(src, dst):
+    """Copy file, directory, or symlink from src to dst."""
+    if dst.exists() or dst.is_symlink():
+        if dst.is_dir() and not dst.is_symlink():
+            shutil.rmtree(dst)
+        else:
+            dst.unlink()
+
+    if src.is_symlink():
+        os.symlink(os.readlink(src), dst)
+    elif src.is_dir():
+        shutil.copytree(src, dst, symlinks=True)
+    else:
+        shutil.copy2(src, dst)
+
+
+def sanitize_codex_config(src, dst):
+    """Copy ~/.codex/config.toml but drop source-user project trust entries."""
+    try:
+        lines = src.read_text().splitlines()
+    except OSError:
+        return False
+
+    sanitized = []
+    skip_section = False
+    removed_projects = 0
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[projects.") and stripped.endswith("]"):
+            skip_section = True
+            removed_projects += 1
+            continue
+        if skip_section and stripped.startswith("[") and stripped.endswith("]"):
+            skip_section = False
+        if not skip_section:
+            sanitized.append(line)
+
+    dst.write_text("\n".join(sanitized).rstrip() + "\n")
+    print(f"  Copying {src} -> {dst} (dropped {removed_projects} project trust entries)")
+    return True
+
+
+def ensure_shared_tool_access():
+    """Make selected Homebrew-installed tools executable by slot users."""
+    for tool in SHARED_TOOLS:
+        bin_path = tool["bin"]
+        package_dir = tool["package_dir"]
+
+        if not bin_path.exists():
+            continue
+
+        if not package_dir.exists():
+            print(f"  WARNING: {tool['name']} binary exists but package dir {package_dir} is missing")
+            continue
+
+        print(f"  Ensuring shared access to {tool['name']} in {package_dir}")
+        run(["chmod", "-R", "a+rX", str(package_dir)])
+        if bin_path.is_symlink():
+            run(["chmod", "-h", "755", str(bin_path)], check=False)
+
+
+def copy_codex_config(name, source_user):
+    """Copy curated Codex config from source user."""
+    home = Path(f"/Users/{name}")
+    source_home = Path(f"/Users/{source_user}")
+    src_codex = source_home / ".codex"
+    dst_codex = home / ".codex"
+
+    if not src_codex.exists():
+        print("  No ~/.codex found in source user, skipping Codex config")
+        return
+
+    dst_codex.mkdir(exist_ok=True)
+
+    src_config = src_codex / "config.toml"
+    if src_config.exists():
+        sanitize_codex_config(src_config, dst_codex / "config.toml")
+
+    for rel in CODEX_COPY_FILES:
+        src = src_codex / rel
+        dst = dst_codex / rel
+        if src.exists() or src.is_symlink():
+            print(f"  Copying {src} -> {dst}")
+            copy_path(src, dst)
+
+    for rel in CODEX_COPY_DIRS:
+        src = src_codex / rel
+        dst = dst_codex / rel
+        if src.exists() or src.is_symlink():
+            print(f"  Copying {src} -> {dst}")
+            copy_path(src, dst)
+
+
+
+
+KEYCHAIN_PASS_VAR = "ISOLATOR_KEYCHAIN_PASS"
+KEYCHAIN_NAME = "login.keychain-db"
+
+
+def inject_auth_env(name):
+    """Mode 1: CLAUDE_CODE_OAUTH_TOKEN in admin env → copy to slot's .env."""
+    token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
+    if not token:
+        return False
+
+    home = Path(f"/Users/{name}")
+    env_file = home / ".env"
+    env_file.write_text(f'# Isolator auth\nexport CLAUDE_CODE_OAUTH_TOKEN="{token}"\n')
+    print(f"  Injected CLAUDE_CODE_OAUTH_TOKEN into .env")
+    return True
+
+
+def inject_auth_keychain(name):
+    """Mode 2: ISOLATOR_KEYCHAIN_PASS in admin env → copy keychain credentials."""
+    kc_pass = os.environ.get(KEYCHAIN_PASS_VAR)
+    if not kc_pass:
+        return False
+
+    home = Path(f"/Users/{name}")
+    kc_dir = home / "Library" / "Keychains"
+    kc_file = kc_dir / KEYCHAIN_NAME
+
+    # Read credential from admin's keychain
+    r = run(["security", "find-generic-password",
+             "-s", "Claude Code-credentials", "-w"], check=False)
+    if r.returncode != 0:
+        print(f"  WARNING: no Claude Code credentials in admin keychain, skipping")
+        return False
+
+    cred_value = r.stdout.strip()
+
+    # Create slot's keychain
+    kc_dir.mkdir(parents=True, exist_ok=True)
+    run(["chown", "-R", f"{name}:staff", str(home / "Library")])
+
+    if kc_file.exists():
+        run_as(name, ["security", "delete-keychain", str(kc_file)], check=False)
+
+    run_as(name, ["security", "create-keychain", "-p", kc_pass, str(kc_file)])
+    run_as(name, ["security", "default-keychain", "-s", str(kc_file)])
+    run_as(name, ["security", "list-keychains", "-s", str(kc_file)])
+    run_as(name, ["security", "set-keychain-settings", str(kc_file)])
+    run_as(name, ["security", "unlock-keychain", "-p", kc_pass, str(kc_file)])
+
+    # Add credential
+    run_as(name, ["security", "add-generic-password",
+         "-s", "Claude Code-credentials",
+         "-a", "Claude Code",
+         "-w", cred_value,
+         "-T", "",
+         str(kc_file)])
+
+    # Write .credentials.json so Claude Code uses fresh token (not stale cache)
+    claude_dir = home / ".claude"
+    claude_dir.mkdir(exist_ok=True)
+    creds_file = claude_dir / ".credentials.json"
+    creds_file.write_text(cred_value + "\n")
+
+    # Replace .env: remove stale token, store keychain password for profile unlock
+    env_file = home / ".env"
+    env_file.write_text(f'# Isolator auth (keychain)\nexport ISOLATOR_KEYCHAIN_PASS="{kc_pass}"\n')
+
+    print(f"  Copied Claude Code credentials to {name}'s keychain")
+    return True
+
+
 def inject_auth(name, user_config):
-    """Write .env file with auth keys from config."""
+    """Inject auth from environment. Tries env token first, then keychain."""
+    if inject_auth_env(name):
+        return
+    if inject_auth_keychain(name):
+        return
+
+    # Fallback: config-based key files (if [users.*.auth] exists)
     home = Path(f"/Users/{name}")
     auth = user_config.get("auth", {})
     if not auth:
+        print(f"  No auth: set CLAUDE_CODE_OAUTH_TOKEN or {KEYCHAIN_PASS_VAR} in your env")
         return
 
     env_file = home / ".env"
-    lines = ["# Isolator auth — root-owned, read-only"]
+    lines = ["# Isolator auth"]
     for var, keyfile in auth.items():
         keypath = Path(keyfile)
         if not keypath.exists():
@@ -225,23 +467,52 @@ def set_ownership(name):
 
     # Config files — root-owned, read-only
     for f in [".bash_profile", ".bashrc", ".zprofile", ".zshrc",
-              ".env", ".claude/settings.json", ".claude.json"]:
+              ".env", ".claude/settings.json",
+              ".claude.json", ".codex/config.toml", ".codex/AGENTS.md"]:
         path = home / f
         if path.exists():
             run(["chown", "root:wheel", str(path)])
             run(["chmod", "444", str(path)])
 
-    # .claude dir — root-owned but traversable
+    # .claude dir — slot-owned (Claude needs to create subdirs for sessions, etc.)
     claude_dir = home / ".claude"
     if claude_dir.exists():
-        run(["chown", "root:wheel", str(claude_dir)])
-        run(["chmod", "755", str(claude_dir)])
+        run(["chown", f"{name}:staff", str(claude_dir)])
+        run(["chmod", "700", str(claude_dir)])
 
     # plugins — root-owned
     plugins_dir = home / ".claude" / "plugins"
     if plugins_dir.exists():
         run(["chown", "-R", "root:wheel", str(plugins_dir)])
         run(["chmod", "-R", "755", str(plugins_dir)])
+
+    # .claude.json — slot-owned (Claude writes state to it)
+    cj = home / ".claude.json"
+    if cj.exists():
+        run(["chown", f"{name}:staff", str(cj)])
+        run(["chmod", "600", str(cj)])
+
+    # .codex dir — slot-owned for runtime state
+    codex_dir = home / ".codex"
+    if codex_dir.exists():
+        run(["chown", f"{name}:staff", str(codex_dir)])
+        run(["chmod", "700", str(codex_dir)])
+
+    # auth.json — slot-owned (Codex may refresh tokens)
+    codex_auth = codex_dir / "auth.json"
+    if codex_auth.exists():
+        run(["chown", f"{name}:staff", str(codex_auth)])
+        run(["chmod", "600", str(codex_auth)])
+
+    # Curated Codex content — root-owned, read-only
+    for rel in [".codex/plugins", ".codex/skills", ".codex/agents"]:
+        path = home / rel
+        if path.exists():
+            if path.is_symlink():
+                run(["chown", "-h", "root:wheel", str(path)])
+            else:
+                run(["chown", "-R", "root:wheel", str(path)])
+                run(["chmod", "-R", "755", str(path)])
 
     # Everything else — owned by slot user
     for d in [".local", ".npm-global", ".cache", "workspace"]:
@@ -284,8 +555,10 @@ def create_user(name, config, from_user=None):
     setup_home(name, admin)
     copy_shell_config(name, source, shell_type)
     copy_claude_config(name, source)
+    copy_codex_config(name, source)
     inject_auth(name, user_config)
     create_skeleton(name)
+    ensure_shared_tool_access()
     set_ownership(name)
 
     print(f"=== Done: {name} ===")
@@ -302,20 +575,46 @@ def main():
 
     config = load_config()
 
-    if sys.argv[1] == "--all":
+    # Parse --token and --keychain-pass into env vars
+    # so the auth functions can read them uniformly
+    args = sys.argv[1:]
+    if "--token" in args:
+        idx = args.index("--token")
+        if idx + 1 < len(args):
+            os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = args.pop(idx + 1)
+            args.pop(idx)
+        else:
+            print("Error: --token requires a value")
+            sys.exit(1)
+
+    if "--keychain-pass" in args:
+        idx = args.index("--keychain-pass")
+        if idx + 1 < len(args):
+            os.environ["ISOLATOR_KEYCHAIN_PASS"] = args.pop(idx + 1)
+            args.pop(idx)
+        else:
+            print("Error: --keychain-pass requires a value")
+            sys.exit(1)
+
+    from_user = None
+    if "--from" in args:
+        idx = args.index("--from")
+        if idx + 1 < len(args):
+            from_user = args.pop(idx + 1)
+            args.pop(idx)
+        else:
+            print("Error: --from requires a username")
+            sys.exit(1)
+
+    if not args:
+        print(__doc__)
+        sys.exit(1)
+
+    if args[0] == "--all":
         for name in config.get("users", {}):
-            create_user(name, config)
+            create_user(name, config, from_user)
     else:
-        name = sys.argv[1]
-        from_user = None
-        if "--from" in sys.argv:
-            idx = sys.argv.index("--from")
-            if idx + 1 < len(sys.argv):
-                from_user = sys.argv[idx + 1]
-            else:
-                print("Error: --from requires a username")
-                sys.exit(1)
-        create_user(name, config, from_user)
+        create_user(args[0], config, from_user)
 
 
 if __name__ == "__main__":

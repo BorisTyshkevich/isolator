@@ -7,7 +7,7 @@ No VM, no Docker. Just sudo + pf + ACL.
 
 Two Python scripts (stdlib only, no packages):
 
-1. **`create-user <name>`** — create macOS user, ACL, copy admin's shell/claude config, inject auth
+1. **`create-user <name>`** — create macOS user, ACL, copy source user's shell/Claude/Codex config, inject auth
 2. **`apply-pf`** — generate and load pf firewall rules from config (per-user + global hosts)
 
 After that:
@@ -93,12 +93,21 @@ Sets the same shell for the slot user. Copies the matching rc files:
 4. **Copy source's shell config** — detected rc files for the shell. Append `source /etc/isolator/profile` to the login rc (`.bash_profile` or `.zprofile`).
 5. **Copy source's Claude config:**
    - `~/.claude/settings.json` — copy and merge `"defaultMode": "bypassPermissions"`, `"skipDangerousModePermissionPrompt": true`
-   - `~/.claude.json` — create new file with only the `mcpServers` key extracted from source's (global MCP servers)
+   - `~/.claude.json` — create new file with `mcpServers` + `oauthAccount` from source
    - `~/.claude/skills` — copy symlink if exists
    - `~/.claude/plugins/` — copy dir if exists
-6. **Inject auth** — read key files from config `[users.<name>.auth]`, write `~/.env` (chmod 400)
-7. **Skeleton dirs** — `.local/bin`, `.local/lib`, `.npm-global`, `.cache`
-8. **Set ownership** — all config files owned by root, chmod 444 (slot can read, can't modify)
+6. **Copy source's Codex config:**
+   - `~/.codex/config.toml` — copy but drop all `[projects."..."]` trust entries
+   - `~/.codex/auth.json` — copy as slot login/account state
+   - `~/.codex/plugins/`, `~/.codex/skills/`, `~/.codex/agents/` — copy if present
+   - `~/.codex/AGENTS.md` — copy if present
+   - Do not copy histories, logs, sqlite DBs, caches, archived sessions, or tmp state
+7. **Inject auth** — read key files from config `[users.<name>.auth]`, write `~/.env` (chmod 400).
+   For Claude Code: run `claude setup-token` once as admin, store the long-lived OAuth token
+   in `/etc/isolator/keys/claude-oauth`, reference as `CLAUDE_CODE_OAUTH_TOKEN` in config.
+8. **Skeleton dirs** — `.local/bin`, `.local/lib`, `.npm-global`, `.cache`
+9. **Normalize shared tool access** — if Homebrew `codex` is installed with user-private npm permissions, fix `/opt/homebrew/bin/codex` and its package tree to be world-readable/executable
+10. **Set ownership** — static config files owned by root, Codex `auth.json` owned by the slot user so runtime token refresh can work
 
 ### What gets copied and why
 
@@ -110,6 +119,11 @@ Sets the same shell for the slot user. Copies the matching rc files:
 | `~source/.claude.json` → `mcpServers` | `~slot/.claude.json` | Global MCP servers |
 | `~source/.claude/skills` | `~slot/.claude/skills` | Custom skills symlink |
 | `~source/.claude/plugins/` | `~slot/.claude/plugins/` | Installed plugins |
+| `~source/.codex/config.toml` | `~slot/.codex/config.toml` | Codex preferences and MCP/plugins without source-user project trust |
+| `~source/.codex/auth.json` | `~slot/.codex/auth.json` | Codex login/account state |
+| `~source/.codex/plugins/` | `~slot/.codex/plugins/` | Installed Codex plugins |
+| `~source/.codex/skills/` | `~slot/.codex/skills/` | Installed Codex skills |
+| `~source/.codex/agents/` | `~slot/.codex/agents/` | Agent presets |
 | `/etc/isolator/keys/*` | `~slot/.env` | API keys per config |
 
 Source = `--from` user, or config `from`, or admin (default).
@@ -119,8 +133,11 @@ Source = `--from` user, or config `from`, or admin (default).
 - `~admin/.claude/projects/` — session state, per-project MCP (path-specific)
 - `~admin/.claude/history.jsonl` — prompt history
 - `~admin/.claude/debug/`, `file-history/`, `session-env/` — runtime caches
+- `~admin/.codex/history.jsonl`, `session_index.jsonl`, `logs*`, `state_*.sqlite*` — Codex history/runtime state
+- `~admin/.codex/cache/`, `tmp/`, `.tmp/`, `archived_sessions/`, `sessions/`, `shell_snapshots/` — Codex caches and transient state
 - `~admin/.ssh/`, `~admin/.aws/`, `~admin/.kube/` — sensitive credentials
 - Per-project MCP servers from `~admin/.claude.json` `projects.*` — these reference admin's paths; project-level MCP comes from `.mcp.json` in the workspace itself
+- Project trust entries from `~admin/.codex/config.toml` `[projects."..."]` — these reference the source user's paths and must be dropped
 
 ---
 
@@ -227,4 +244,4 @@ sudo apply-pf
 
 1. **Home reset** — add `reset-user <name>` if needed between runs.
 2. **Workspace sharing** — if agent needs admin's project dir, need ACL on that dir. Could be: `grant-workspace <user> <path>`.
-3. **Codex config** — same pattern: copy `~admin/.codex/` to slot home. Add when codex support needed.
+3. **Codex auth portability** — copied `auth.json` is assumed to remain valid across slot users on the same machine.

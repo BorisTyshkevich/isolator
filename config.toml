@@ -15,7 +15,7 @@ hosts = [
 ]
 
 [users.slot-0.auth]
-ANTHROPIC_API_KEY = "/etc/isolator/keys/anthropic"
+CLAUDE_CODE_OAUTH_TOKEN = "/etc/isolator/keys/claude-oauth"
 
 [users.slot-1]
 uid = 601
@@ -35,4 +35,4 @@ hosts = [
 ]
 
 [users.slot-2.auth]
-ANTHROPIC_API_KEY = "/etc/isolator/keys/anthropic"
+CLAUDE_CODE_OAUTH_TOKEN = "/etc/isolator/keys/claude-oauth"
