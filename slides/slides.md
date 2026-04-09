@@ -354,3 +354,5 @@ Your agent's work is ephemeral. **Push to git, don't rely on backups.**
 Open source. Python. Stdlib only.
 
 One script. One config. Works today.
+
+[github.com/BorisTyshkevich/isolator](https://github.com/BorisTyshkevich/isolator)
