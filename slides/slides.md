@@ -130,6 +130,8 @@ A coding agent is only as good as the tools it can reach.
   gcc, make, cmake          compilers
 ```
 
+Maintaining a good tool sets is a big work.
+
 ---
 
 ## The Solution: macOS Users + RBAC
@@ -144,14 +146,14 @@ macOS already has everything we need:
 | Tool sharing | Read-only `/opt/homebrew`, `/usr/local` |
 | Admin control | sudo with Touch ID |
 
-Zero overhead. No VM. No Docker.
+Zero overhead. No VM. No Docker-in-Docker.
 
 ---
 
 ## Architecture
 
 ```
-you (admin, has root via Touch ID sudo)
+you (main OS user, has root access via Touch ID sudo)
  |
  |-- iso acm claude                 # ACM project
  |-- iso click codex                # ClickHouse project
@@ -163,10 +165,11 @@ you (admin, has root via Touch ID sudo)
 ```
 
 Each sandbox user:
-- Can't read your home or others
+- Can't read your home or other's home
 - Can't access network except whitelisted hosts
 - Can read `/opt/homebrew`, `/usr/local` (shared tools)
-- Has its own API keys, config, MCP servers, python libraries
+- Has its own home dir and OS uid 
+- can have different API keys, configs, MCP servers, python libraries
 
 ---
 

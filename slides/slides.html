@@ -586,6 +586,7 @@ section.lead p {
   terraform                 infrastructure
   gcc, make, cmake          compilers
 </code></pre>
+<p>Maintaining a good tool sets is a big work.</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="7" data-paginate="true" data-background-color="#ffffff" data-color="#1d1d1f" data-theme="default" data-style="section {
   font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
@@ -706,7 +707,7 @@ section.lead p {
 </tr>
 </tbody>
 </table>
-<p>Zero overhead. No VM. No Docker.</p>
+<p>Zero overhead. No VM. No Docker-in-Docker.</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="8" data-paginate="true" data-background-color="#ffffff" data-color="#1d1d1f" data-theme="default" data-style="section {
   font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
@@ -796,7 +797,7 @@ section.lead p {
 }
 ;color:#1d1d1f;background-color:#ffffff;background-image:none;" data-marpit-pagination-total="18">
 <h2 id="architecture">Architecture</h2>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code>you (admin, has root via Touch ID sudo)
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code>you (main OS user, has root access via Touch ID sudo)
  |
  |-- iso acm claude                 # ACM project
  |-- iso click codex                # ClickHouse project
@@ -808,10 +809,11 @@ section.lead p {
 </code></pre>
 <p>Each sandbox user:</p>
 <ul>
-<li>Can't read your home or others</li>
+<li>Can't read your home or other's home</li>
 <li>Can't access network except whitelisted hosts</li>
 <li>Can read <code>/opt/homebrew</code>, <code>/usr/local</code> (shared tools)</li>
-<li>Has its own API keys, config, MCP servers, python libraries</li>
+<li>Has its own home dir and OS uid</li>
+<li>can have different API keys, configs, MCP servers, python libraries</li>
 </ul>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="9" data-paginate="true" data-background-color="#ffffff" data-color="#1d1d1f" data-theme="default" data-style="section {
