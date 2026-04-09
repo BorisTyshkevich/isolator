@@ -157,16 +157,16 @@ Zero overhead. No VM. No Docker.
 ```
 you (admin, has root via Touch ID sudo)
  |
- |-- sudo -u slot-0 -i claude
- |-- sudo -u slot-1 -i codex
- |-- sudo -u slot-2 -i claude    (different task)
+ |-- iso acm claude                 # ACM project
+ |-- iso click codex                # ClickHouse project
+ |-- iso tools claude               # shared tooling
  |
- +-- slot-0  uid=600  /Users/slot-0/  chmod 700
- +-- slot-1  uid=601  /Users/slot-1/  chmod 700
- +-- slot-2  uid=602  /Users/slot-2/  chmod 700
+ +-- acm    uid=600  /Users/acm/    chmod 700
+ +-- click  uid=601  /Users/click/  chmod 700
+ +-- tools  uid=602  /Users/tools/  chmod 700
 ```
 
-Each slot:
+Each user:
 - Can't read your home or other slots
 - Can't access network except whitelisted hosts
 - Can read `/opt/homebrew`, `/usr/local` (shared tools)
@@ -174,16 +174,16 @@ Each slot:
 
 ---
 
-## Isolator: Two Scripts, One Config
+## Isolator: One Script, One Config
 
-**`create-user`** -- creates a macOS user with:
+**`iso create <name>`** -- creates a macOS user with:
 - Your shell config (`.bashrc`, `.bash_profile`)
 - Your Claude/Codex config (settings, MCP servers, plugins)
-- API keys injected from secure storage
-- ACL granting you read access to their home
+- Auth from keychain or OAuth token
+- ACL granting you read/write access to their home
 - All config files owned by root (agent can't modify)
 
-**`apply-pf`** -- generates per-user firewall rules:
+**`iso pf`** -- generates per-user firewall rules:
 - Resolves hostnames to IPs from config
 - Each user gets their own allowlist
 - Kernel-level enforcement by UID
@@ -199,19 +199,17 @@ admin = "bvt"
 hosts = ["registry.npmjs.org", "pypi.org",
          "files.pythonhosted.org"]
 
-[users.slot-0]
+[users.acm]
 uid = 600
 hosts = ["api.anthropic.com", "mcp.demo.altinity.cloud"]
 
-[users.slot-0.auth]
-ANTHROPIC_API_KEY = "/etc/isolator/keys/anthropic"
-
-[users.slot-1]
+[users.click]
 uid = 601
-hosts = ["api.openai.com"]
+hosts = ["api.anthropic.com", "api.openai.com"]
 
-[users.slot-1.auth]
-OPENAI_API_KEY = "/etc/isolator/keys/openai"
+[users.tools]
+uid = 602
+hosts = ["api.anthropic.com"]
 ```
 
 ---
@@ -219,9 +217,9 @@ OPENAI_API_KEY = "/etc/isolator/keys/openai"
 ## What the Agent Sees
 
 ```
-/Users/slot-0/                      (chmod 700, own home)
+/Users/acm/                         (chmod 700, own home)
   .bash_profile                     your shell config + isolator profile
-  .env                              API keys (root-owned, read-only)
+  .env                              keychain password (root-owned, read-only)
   .claude/settings.json             your settings + bypassPermissions
   .local/bin/                       pip installs
   .npm-global/                      npm installs
@@ -256,18 +254,20 @@ No permission prompts. No interruptions. No risk.
 
 ```bash
 # One-time setup
-sudo create-user --all
-sudo apply-pf
+iso create acm --keychain-pass ttt
+iso create click --keychain-pass ttt
+iso pf
 
 # Run agents
-sudo -u slot-0 -i claude          # Claude session
-sudo -u slot-1 -i codex           # Codex session
+iso acm claude                    # Claude on ACM project
+iso click codex                   # Codex on ClickHouse
 
 # Read their work from your account
-cat /Users/slot-0/workspace/main.py
+cat /Users/acm/workspace/main.py
 
-# Refresh firewall after DNS changes
-sudo apply-pf
+# Refresh config after changes
+iso create acm                    # re-copies shell/claude config
+iso pf                            # refresh firewall rules
 ```
 
 ---
