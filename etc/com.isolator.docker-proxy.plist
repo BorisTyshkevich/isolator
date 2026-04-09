@@ -8,7 +8,7 @@
     <array>
         <string>/bin/bash</string>
         <string>-c</string>
-        <string>rm -f /var/run/docker-shared.sock; ln /var/run/docker.sock /var/run/docker-shared.sock; chmod 770 /var/run/docker-shared.sock</string>
+        <string>target=$(readlink /var/run/docker.sock 2>/dev/null); if [ -n "$target" ] &amp;&amp; [ -S "$target" ]; then rm -f /var/run/docker.sock; ln "$target" /var/run/docker.sock; chmod 770 /var/run/docker.sock; fi</string>
     </array>
     <key>RunAtLoad</key>
     <true/>

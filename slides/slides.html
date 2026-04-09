@@ -1645,15 +1645,15 @@ section.lead p {
 }
 ;color:#eee;background-color:#1a1a2e;background-image:none;" data-marpit-pagination-total="18">
 <h2 id="isolator--docker-hardlink-the-socket">Isolator + Docker: Hardlink the Socket</h2>
-<p>OrbStack (or Docker Desktop) runs as the admin. The socket lives in <code>~/</code>.<br />
-Isolated users can't reach it. Fix: <strong>hardlink the socket</strong>.</p>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-bash"><span class="hljs-comment"># launchd re-creates the link when OrbStack restarts</span>
-<span class="hljs-built_in">ln</span> /var/run/docker.sock /var/run/docker-shared.sock
-<span class="hljs-built_in">chmod</span> 770 /var/run/docker-shared.sock
+<p>OrbStack (or Docker Desktop) socket lives in <code>~/</code> — isolated users can't reach it.<br />
+<code>/var/run/docker.sock</code> is just a symlink there. Fix: <strong>replace symlink with hardlink</strong>.</p>
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-bash"><span class="hljs-comment"># launchd watches and re-links when OrbStack restarts</span>
+target=$(<span class="hljs-built_in">readlink</span> /var/run/docker.sock)
+<span class="hljs-built_in">rm</span> /var/run/docker.sock
+<span class="hljs-built_in">ln</span> <span class="hljs-string">&quot;<span class="hljs-variable">$target</span>&quot;</span> /var/run/docker.sock
 </code></pre>
-<p>Each isolated user gets <code>DOCKER_HOST</code> via the profile:</p>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-bash"><span class="hljs-built_in">export</span> DOCKER_HOST=<span class="hljs-string">&quot;unix:///var/run/docker-shared.sock&quot;</span>
-</code></pre>
+<p>Standard <code>/var/run/docker.sock</code> path — no <code>DOCKER_HOST</code> needed.<br />
+Containers, testcontainers, ryuk — everything works with default paths.</p>
 <p><strong>Result:</strong> agents run <code>docker</code>, <code>docker-compose</code>, build images, start services — all from inside their sandbox. Zero overhead. No proxy. No VM nesting.</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="17" data-paginate="true" data-background-color="#1a1a2e" data-color="#eee" data-theme="default" data-style="section {

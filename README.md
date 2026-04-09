@@ -249,7 +249,7 @@ Users read `/opt/homebrew` and `/usr/local` but can't write. Upgrade a tool once
 
 ## Docker (OrbStack)
 
-OrbStack's docker socket lives inside the admin's home, which isolated users can't access. Isolator creates a hardlink at `/var/run/docker-shared.sock` that bypasses path traversal — zero overhead, direct connection to the daemon.
+OrbStack's docker socket lives inside the admin's home (`~/.orbstack/run/docker.sock`). The default `/var/run/docker.sock` is a symlink there — isolated users can't traverse `~/`. Isolator replaces the symlink with a hardlink, keeping the standard path accessible to everyone.
 
 ```bash
 # Install (one-time)
@@ -257,7 +257,7 @@ sudo cp etc/com.isolator.docker-proxy.plist /Library/LaunchDaemons/
 sudo launchctl load /Library/LaunchDaemons/com.isolator.docker-proxy.plist
 ```
 
-The launchd job re-creates the hardlink whenever OrbStack recreates the socket (via `WatchPaths`). The isolator profile auto-sets `DOCKER_HOST` when the shared socket exists.
+The launchd job watches `/var/run/docker.sock` — when OrbStack recreates the symlink (after restart), it replaces it with a hardlink. No `DOCKER_HOST` needed, no proxy, containers and testcontainers work with default paths.
 
 ```bash
 # Verify

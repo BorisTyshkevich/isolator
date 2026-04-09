@@ -306,19 +306,18 @@ This is not Docker-as-sandbox. This is Docker-as-dependency.
 
 ## Isolator + Docker: Hardlink the Socket
 
-OrbStack (or Docker Desktop) runs as the admin. The socket lives in `~/`.
-Isolated users can't reach it. Fix: **hardlink the socket**.
+OrbStack (or Docker Desktop) socket lives in `~/` — isolated users can't reach it.
+`/var/run/docker.sock` is just a symlink there. Fix: **replace symlink with hardlink**.
 
 ```bash
-# launchd re-creates the link when OrbStack restarts
-ln /var/run/docker.sock /var/run/docker-shared.sock
-chmod 770 /var/run/docker-shared.sock
+# launchd watches and re-links when OrbStack restarts
+target=$(readlink /var/run/docker.sock)
+rm /var/run/docker.sock
+ln "$target" /var/run/docker.sock
 ```
 
-Each isolated user gets `DOCKER_HOST` via the profile:
-```bash
-export DOCKER_HOST="unix:///var/run/docker-shared.sock"
-```
+Standard `/var/run/docker.sock` path — no `DOCKER_HOST` needed.
+Containers, testcontainers, ryuk — everything works with default paths.
 
 **Result:** agents run `docker`, `docker-compose`, build images, start services — all from inside their sandbox. Zero overhead. No proxy. No VM nesting.
 
