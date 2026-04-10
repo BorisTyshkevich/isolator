@@ -248,6 +248,25 @@ No permission prompts. No interruptions. No risk.
 
 ---
 
+## Three Dimensions of Isolation
+
+| Dimension | Threat | macOS Solution | Linux Solution |
+|-----------|--------|---------------|----------------|
+| **Files** | Read `~/.ssh`, `~/.aws` | chmod 700 + ACL | chmod 700 + ACL |
+| **Network** | Exfiltrate to `evil.com` | pf by UID | Network namespace + proxy |
+| **Processes** | Access admin's Docker, Chrome | Per-resource isolation | PID namespace |
+
+macOS has no PID namespaces — agents can `ps aux` and see everything.
+But **seeing** a process ≠ **controlling** it. Access requires a channel:
+
+| Process | Channel | Isolator's fix |
+|---------|---------|---------------|
+| Docker daemon | `/var/run/docker.sock` | Per-user networks + iptables egress |
+| Chrome browser | CDP on `localhost:9222` | Dedicated empty-profile browser (`iso chrome`) |
+| Other services | localhost ports | pf allows localhost (admin-controlled) |
+
+---
+
 ## Usage
 
 ```bash
