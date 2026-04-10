@@ -7,32 +7,27 @@ hosts = [
     "files.pythonhosted.org",
 ]
 
-[users.slot-0]
+[users.acm]
 uid = 600
 hosts = [
     "api.anthropic.com",
     "sentry.io",
 ]
 
-[users.slot-0.auth]
-CLAUDE_CODE_OAUTH_TOKEN = "/etc/isolator/keys/claude-oauth"
-
-[users.slot-1]
+[users.click]
 uid = 601
 hosts = [
+    "api.anthropic.com",
     "api.openai.com",
 ]
 
-[users.slot-1.auth]
+[users.click.auth]
 OPENAI_API_KEY = "/etc/isolator/keys/openai"
 
-[users.slot-2]
+[users.mcp]
 uid = 602
-from = "slot-0"
+from = "acm"
 hosts = [
     "api.anthropic.com",
     "mcp.demo.altinity.cloud",
 ]
-
-[users.slot-2.auth]
-CLAUDE_CODE_OAUTH_TOKEN = "/etc/isolator/keys/claude-oauth"

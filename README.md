@@ -155,11 +155,35 @@ Writes the token to `~/.claude/.credentials.json` (plaintext). Simpler but less 
 | Encrypted at rest | Yes | No |
 | Setup | One command | `claude setup-token` first |
 
+### Config key files (for any env var)
+
+For API keys that aren't Claude OAuth (e.g., `OPENAI_API_KEY`), define them in `config.toml`:
+
+```toml
+[users.click.auth]
+OPENAI_API_KEY = "/etc/isolator/keys/openai"
+```
+
+Store the key in a root-only file:
+
+```bash
+echo "sk-..." | sudo tee /etc/isolator/keys/openai > /dev/null
+sudo chmod 400 /etc/isolator/keys/openai
+```
+
+On `iso create`, each key is read and written to `~/.env` (root-owned, read-only 444). The profile sources `~/.env` on login. This works for any environment variable — `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `HF_TOKEN`, etc.
+
+Config key files are **always** processed, regardless of `--keychain` or `--token`. So a user can have Claude auth via keychain AND an OpenAI key via config:
+
+```bash
+iso create click --keychain       # Claude via keychain + OPENAI_API_KEY from config
+```
+
 ### Codex
 
 Codex auth is handled by copying a curated subset of the source user's `~/.codex`:
 
-- `config.toml` — with source-user `[projects."..."]` trust entries removed
+- `config.toml` — with source-user `[projects."..."]` trust entries removed, bypass mode enabled
 - `auth.json` — Codex login state
 - `plugins/`, `skills/`, `agents/`, `AGENTS.md`
 
@@ -313,37 +337,7 @@ orb dmesg -w | grep iso-
 orb dmesg | grep "iso-"
 ```
 
-### Log rotation
+**pf logs** — macOS handles `pflog0` as a virtual interface all logs in-RAM rotated automatically.
+**Docker iptables logs** — stored in the OrbStack VM's kernel ring buffer (`dmesg`), which auto-rotates, too. 
 
-**pf logs** — macOS handles `pflog0` as a virtual interface, no files to rotate. If capturing to a file:
 
-```bash
-# Rotate pcap manually
-sudo tcpdump -i pflog0 -n -w /var/log/isolator-pf.pcap -G 86400 -Z root
-# -G 86400 = rotate every 24h
-```
-
-**Docker iptables logs** — stored in the OrbStack VM's kernel ring buffer (`dmesg`), which auto-rotates. For persistent logging:
-
-```bash
-# Inside OrbStack VM: forward to a file via rsyslog
-orb sudo bash -c 'cat >> /etc/rsyslog.d/isolator.conf << EOF
-:msg, contains, "iso-" /var/log/isolator-docker.log
-& stop
-EOF'
-orb sudo systemctl restart rsyslog
-
-# Add logrotate
-orb sudo bash -c 'cat > /etc/logrotate.d/isolator << EOF
-/var/log/isolator-docker.log {
-    daily
-    rotate 7
-    compress
-    missingok
-    notifempty
-    postrotate
-        systemctl restart rsyslog
-    endscript
-}
-EOF'
-```

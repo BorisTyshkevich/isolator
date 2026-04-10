@@ -451,13 +451,34 @@ def inject_auth_keychain(name):
     return True
 
 
+def inject_auth_keyfiles(name, user_config):
+    """Inject env vars from key files defined in config [users.<name>.auth]."""
+    auth = user_config.get("auth", {})
+    if not auth:
+        return
+    home = Path(f"/Users/{name}")
+    env_file = home / ".env"
+    lines = ["# Isolator auth (from config key files)"]
+    for var, keyfile in auth.items():
+        keypath = Path(keyfile)
+        if not keypath.exists():
+            print(f"  WARNING: key file {keypath} not found, skipping {var}")
+            continue
+        value = keypath.read_text().strip()
+        lines.append(f'export {var}="{value}"')
+        print(f"  Injecting {var} from {keypath}")
+    if len(lines) > 1:
+        env_file.write_text("\n".join(lines) + "\n")
+
+
 def inject_auth(name, user_config):
-    """Inject auth. Tries token first, then keychain."""
+    """Inject auth. Tries CLI flags first, then config key files."""
     if inject_auth_token(name):
-        return
-    if inject_auth_keychain(name):
-        return
-    print(f"  No auth: pass --token or --keychain-pass")
+        pass  # --token for Claude
+    elif inject_auth_keychain(name):
+        pass  # --keychain for Claude
+    # Always inject config key files (for OPENAI_API_KEY, etc.)
+    inject_auth_keyfiles(name, user_config)
 
 
 # ── Ownership ───────────────────────────────────────────────────────────────
@@ -472,7 +493,7 @@ def set_ownership(name):
     home = Path(f"/Users/{name}")
 
     for f in [".bash_profile", ".bashrc", ".zprofile", ".zshrc",
-              ".claude/settings.json",
+              ".env", ".claude/settings.json",
               ".claude.json", ".codex/config.toml", ".codex/AGENTS.md"]:
         path = home / f
         if path.exists():

@@ -3,6 +3,9 @@
 
 # Keychain is unlocked by the iso script before launch (password in /etc/isolator/keychain/)
 
+# Environment variables from config key files (OPENAI_API_KEY, etc.)
+[[ -f "$HOME/.env" ]] && source "$HOME/.env"
+
 # Ensure core tools are in PATH, then prepend local installs
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
 [[ ":$PATH:" != *":/opt/homebrew/bin:"* ]] && export PATH="/opt/homebrew/bin:$PATH"
