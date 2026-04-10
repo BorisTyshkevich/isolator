@@ -336,20 +336,25 @@ Or make it permanent:
 defaults write com.google.Chrome CommandLineArguments -array "--remote-debugging-port=9222"
 ```
 
-**2. Add a CDP-based Chrome MCP server** to your `~/.claude.json`. Use any MCP server that connects via CDP URL (the ecosystem is evolving — check what's current):
+**2. Add the official Chrome DevTools MCP server:**
 
+```bash
+claude mcp add chrome-devtools --scope user npx chrome-devtools-mcp@latest
+```
+
+Or manually in `~/.claude.json`:
 ```json
 {
   "mcpServers": {
-    "chrome": {
+    "chrome-devtools": {
       "command": "npx",
-      "args": ["<chrome-cdp-mcp-package>", "--cdp-url=http://127.0.0.1:9222"]
+      "args": ["chrome-devtools-mcp@latest"]
     }
   }
 }
 ```
 
-**Important:** use a package that connects via CDP over the network (`http://127.0.0.1:9222`), not one that uses AppleScript — AppleScript-based packages won't work cross-user.
+This is Google's official [chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp) — connects via CDP, auto-discovers Chrome on port 9222.
 
 **3. Copy to sandboxed users:**
 
