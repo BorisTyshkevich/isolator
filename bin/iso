@@ -710,7 +710,9 @@ def generate_anchor(config):
         lines.append(f"pass {log_kw}out proto tcp user {uid} to <{name}-allowed> port 443")
 
     lines.append("")
-    lines.append(f"pass out proto udp user {{ {uid_list} }} to 127.0.0.1 port 53")
+    # Allow all localhost — local services (Chrome DevTools, MCP servers, etc.)
+    lines.append(f"pass out proto tcp user {{ {uid_list} }} to 127.0.0.1")
+    lines.append(f"pass out proto udp user {{ {uid_list} }} to 127.0.0.1")
     lines.append("")
     return "\n".join(lines)
 

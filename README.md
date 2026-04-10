@@ -321,6 +321,50 @@ The launchd job watches `/var/run/docker.sock` — when OrbStack recreates the s
 iso click docker ps
 ```
 
+## Chrome MCP (browser access from sandbox)
+
+Sandboxed agents can control Chrome running on the admin's desktop via Chrome DevTools Protocol. Useful for web testing, screenshots, auth flows.
+
+**1. Launch Chrome with debugging** (as admin):
+
+```bash
+open -a "Google Chrome" --args --remote-debugging-port=9222
+```
+
+Or add `--remote-debugging-port=9222` to Chrome's launch flags permanently.
+
+**2. Add Chrome MCP to your config** (as admin):
+
+The Chrome MCP server is already in `~/.claude.json`:
+
+```json
+{
+  "mcpServers": {
+    "chrome": {
+      "command": "npx",
+      "args": ["@anthropic-ai/chrome-mcp@latest", "--cdp-url=http://127.0.0.1:9222"]
+    }
+  }
+}
+```
+
+**3. Copy to sandboxed users:**
+
+```bash
+iso create acm                   # re-copies MCP config from admin
+```
+
+This works because:
+- `iso pf` allows all localhost TCP for sandboxed users (local services are admin-controlled)
+- Chrome DevTools listens on `127.0.0.1:9222`
+- `npx` is in `/opt/homebrew/bin` (shared tools)
+- The MCP server config is copied from admin's `.claude.json`
+
+```bash
+iso acm claude
+# Agent can now use Chrome MCP: navigate, screenshot, fill forms, etc.
+```
+
 ## Network Logging
 
 Enable per-user logging in `config.toml`:
