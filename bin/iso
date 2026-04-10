@@ -10,6 +10,9 @@ Usage:
     iso pf --dry-run                  Print firewall rules without loading
     iso list                          List configured users
     iso <user> [command] [args...]     Run command as isolated user (default: bash)
+    iso <user> remote [--bg]          Start sandboxed remote session for Claude Desktop
+    iso <user> remote --status        Show remote session status
+    iso <user> remote --stop          Stop remote session
 
 Options for create:
     --from USER                       Copy config from USER (default: admin)
@@ -19,8 +22,8 @@ Options for create:
 Examples:
     iso create acm --keychain
     iso acm claude
-    iso acm
-    iso acm codex --model o3
+    iso acm remote                    # connect from Claude Desktop
+    iso acm remote --bg               # start in background
     iso delete acm
     iso pf
 """
@@ -830,6 +833,80 @@ def cmd_run(user, command, args):
     os.execvp("sudo", ["sudo", "-u", user, "-i", command] + extra + args)
 
 
+# ── Remote command ──────────────────────────────────────────────────────────
+
+REMOTE_PID_DIR = Path("/tmp/isolator-remote")
+
+
+def remote_pid_file(user):
+    return REMOTE_PID_DIR / f"{user}.pid"
+
+
+def cmd_remote(user, args):
+    """Manage a sandboxed remote Claude session for Claude Desktop."""
+    if "--stop" in args:
+        pid_file = remote_pid_file(user)
+        if not pid_file.exists():
+            print(f"No remote session for {user}")
+            return
+        pid = int(pid_file.read_text().strip())
+        subprocess.run(["sudo", "kill", str(pid)], capture_output=True)
+        pid_file.unlink(missing_ok=True)
+        print(f"Stopped remote session for {user} (pid {pid})")
+        return
+
+    if "--status" in args:
+        pid_file = remote_pid_file(user)
+        if not pid_file.exists():
+            print(f"No remote session for {user}")
+            return
+        pid = int(pid_file.read_text().strip())
+        r = subprocess.run(["ps", "-p", str(pid)], capture_output=True)
+        if r.returncode == 0:
+            print(f"Remote session for {user}: running (pid {pid})")
+        else:
+            print(f"Remote session for {user}: not running (stale pid file)")
+            pid_file.unlink(missing_ok=True)
+        return
+
+    bg = "--bg" in args
+
+    # Unlock keychain
+    kc_file = Path(f"/Users/{user}/Library/Keychains/{KEYCHAIN_NAME}")
+    pass_file = KEYCHAIN_PASS_DIR / user
+    if kc_file.exists() and pass_file.exists():
+        r = subprocess.run(["sudo", "cat", str(pass_file)],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            kc_pass = r.stdout.strip()
+            subprocess.run(
+                ["sudo", "security", "unlock-keychain", "-p", kc_pass, str(kc_file)],
+                capture_output=True)
+
+    remote_cmd = ["sudo", "-u", user, "-i",
+                  "claude", "--remote", "--permission-mode", "bypassPermissions"]
+
+    if bg:
+        REMOTE_PID_DIR.mkdir(exist_ok=True)
+        proc = subprocess.Popen(
+            remote_cmd,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        pid_file = remote_pid_file(user)
+        pid_file.write_text(str(proc.pid))
+        print(f"Started remote session for {user} in background (pid {proc.pid})")
+        # Print first few lines to capture the connection URL
+        for _ in range(20):
+            line = proc.stdout.readline()
+            if not line:
+                break
+            print(line, end="")
+            if "http" in line.lower() or "connect" in line.lower():
+                break
+    else:
+        # Foreground — exec into it
+        os.execvp("sudo", remote_cmd)
+
+
 # ── List command ────────────────────────────────────────────────────────────
 
 def cmd_list(config):
@@ -880,6 +957,9 @@ def main():
     # ── iso <user> [command] [args...] ──
     if subcmd not in SUBCOMMANDS and not subcmd.startswith("-"):
         cmd = sys.argv[2] if len(sys.argv) >= 3 else "bash"
+        if cmd == "remote":
+            cmd_remote(subcmd, sys.argv[3:])
+            return
         cmd_run(subcmd, cmd, sys.argv[3:])
         return
 

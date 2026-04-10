@@ -343,6 +343,43 @@ Your agent's work is ephemeral. **Push to git, don't rely on backups.**
 
 ---
 
+## Claude Desktop + Sandboxed Agent
+
+CLI-only is limiting. But Claude Desktop has **no sandbox at all**.
+
+**Solution:** run the agent sandboxed, connect from Desktop:
+
+```bash
+iso acm remote          # starts claude --remote as sandboxed user
+                        # prints connection URL → paste into Desktop
+```
+
+The agent runs as `acm` — filesystem isolation, network whitelist, read-only config.
+You get Desktop's full UI — file preview, diffs, images, rich markdown.
+
+---
+
+## Remote Sessions: Multiple Projects at Once
+
+```bash
+iso acm remote --bg              # ACM project → background
+iso click remote --bg            # ClickHouse project → background
+iso mcp remote --bg              # MCP project → background
+```
+
+Each session: **sandboxed**, **persistent** (survives terminal disconnect), **independent**.
+
+Connect from Claude Desktop tabs. Switch between projects instantly.
+
+```bash
+iso acm remote --status          # check if running
+iso acm remote --stop            # stop when done
+```
+
+Works across machines — agent on a Linux server, Desktop on your Mac.
+
+---
+
 <!-- _class: lead -->
 
 # Isolator

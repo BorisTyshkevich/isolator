@@ -65,12 +65,37 @@ iso pf                            # Apply firewall rules
 iso pf --dry-run                  # Print rules without loading
 iso list                          # List configured users
 iso <user> [command] [args...]    # Run command as isolated user (default: bash)
+iso <user> remote [--bg]         # Start sandboxed remote session for Claude Desktop
+iso <user> remote --status       # Show remote session status
+iso <user> remote --stop         # Stop remote session
 ```
 
 When running `claude`, `iso` automatically injects `--permission-mode bypassPermissions`.
 Codex bypass is configured via `config.toml` (`approval_policy = "never"`).
 
 Any other command passes through unchanged: `iso acm bash`, `iso acm npm install`, etc.
+
+## Claude Desktop + Sandboxed Agent
+
+Run a sandboxed agent in remote mode and connect from Claude Desktop's full GUI:
+
+```bash
+iso acm remote                   # starts claude --remote, prints connection URL
+```
+
+Open Claude Desktop → Connect to remote → paste the URL. The agent runs as `acm` (sandboxed: filesystem isolation, network whitelist, read-only config) while you get Desktop's rich UI.
+
+```bash
+iso acm remote --bg              # start in background
+iso acm remote --status          # check if running
+iso acm remote --stop            # stop the session
+```
+
+**Why this matters:**
+- Desktop's full UI (file preview, diffs, images) + OS-level sandboxing
+- Persistent sessions — agent survives terminal disconnect
+- Multiple sessions — run `iso acm remote --bg` and `iso click remote --bg` simultaneously
+- Works across machines — agent on a Linux server, Desktop on your Mac
 
 ### Create options
 
