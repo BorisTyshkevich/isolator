@@ -345,9 +345,10 @@ Your agent's work is ephemeral. **Push to git, don't rely on backups.**
 
 ## Claude Desktop + Sandboxed Agent
 
-CLI-only is limiting. But Claude Desktop has **no sandbox at all**.
+Claude Desktop has built-in permissions and `/sandbox` mode — but it's **self-policing**.
+The agent enforces its own restrictions. Isolator enforces at the **OS level**.
 
-**Solution:** run the agent sandboxed, connect from Desktop:
+**Best of both:** run the agent sandboxed, connect from Desktop:
 
 ```bash
 iso acm remote          # starts claude --remote as sandboxed user
