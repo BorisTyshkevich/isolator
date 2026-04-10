@@ -100,6 +100,33 @@ Testcontainers mounts `DOCKER_HOST` into the ryuk container, but ryuk expects `/
 
 **Fix:** Isolator's hardlink approach replaces the OrbStack symlink at `/var/run/docker.sock` directly — no `DOCKER_HOST` needed. Containers, testcontainers, and ryuk all use the default path.
 
+## kubectl OIDC login opens Safari (or wrong browser)
+
+`kubelogin` (kubectl oidc-login) opens a browser for auth. It respects `$BROWSER` which Isolator sets to `/etc/isolator/open-browser` (opens Chrome). If that doesn't work, add `--browser-command` to your kubeconfig:
+
+```yaml
+users:
+- name: oidc-user
+  user:
+    exec:
+      command: kubectl
+      args:
+        - oidc-login
+        - get-token
+        - --oidc-issuer-url=https://...
+        - --browser-command=/etc/isolator/open-browser
+```
+
+Or use `--skip-open-browser` to get a URL and open it manually:
+
+```bash
+kubectl oidc-login get-token --skip-open-browser ...
+```
+
+Note: `kubelogin` listens on `127.0.0.1:8000` for the callback. This works because `iso pf` allows all localhost TCP.
+
+Sources: [kubelogin usage](https://github.com/int128/kubelogin/blob/master/docs/usage.md), [browser command issue](https://github.com/int128/kubelogin/issues/942)
+
 ## Claude Code: `Please run /login` / 401 authentication error
 
 The OAuth token is stale or wasn't copied. Possible causes:
