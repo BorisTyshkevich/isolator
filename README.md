@@ -271,3 +271,79 @@ The launchd job watches `/var/run/docker.sock` — when OrbStack recreates the s
 # Verify
 iso click docker ps
 ```
+
+## Network Logging
+
+Enable per-user logging in `config.toml`:
+
+```toml
+[users.acm]
+uid = 600
+hosts = ["api.anthropic.com"]
+log = true
+```
+
+Then re-apply rules: `iso pf`
+
+### Viewing logs
+
+**macOS pf** (host process traffic):
+
+```bash
+# Live stream — blocked and allowed connections
+sudo tcpdump -i pflog0 -n
+
+# Filter by user's UID
+sudo tcpdump -i pflog0 -n 2>&1 | grep "uid 600"
+
+# Save to file for later analysis
+sudo tcpdump -i pflog0 -n -w /var/log/isolator-pf.pcap
+```
+
+**Docker iptables** (container traffic, inside OrbStack VM):
+
+```bash
+# Recent drops
+orb dmesg | grep iso-acm-drop
+
+# Live tail
+orb dmesg -w | grep iso-
+
+# All logged traffic (drops + unrestricted user traffic)
+orb dmesg | grep "iso-"
+```
+
+### Log rotation
+
+**pf logs** — macOS handles `pflog0` as a virtual interface, no files to rotate. If capturing to a file:
+
+```bash
+# Rotate pcap manually
+sudo tcpdump -i pflog0 -n -w /var/log/isolator-pf.pcap -G 86400 -Z root
+# -G 86400 = rotate every 24h
+```
+
+**Docker iptables logs** — stored in the OrbStack VM's kernel ring buffer (`dmesg`), which auto-rotates. For persistent logging:
+
+```bash
+# Inside OrbStack VM: forward to a file via rsyslog
+orb sudo bash -c 'cat >> /etc/rsyslog.d/isolator.conf << EOF
+:msg, contains, "iso-" /var/log/isolator-docker.log
+& stop
+EOF'
+orb sudo systemctl restart rsyslog
+
+# Add logrotate
+orb sudo bash -c 'cat > /etc/logrotate.d/isolator << EOF
+/var/log/isolator-docker.log {
+    daily
+    rotate 7
+    compress
+    missingok
+    notifempty
+    postrotate
+        systemctl restart rsyslog
+    endscript
+}
+EOF'
+```
