@@ -323,7 +323,7 @@ iso click docker ps
 
 ## Chrome MCP (browser access from sandbox)
 
-Sandboxed agents can control Chrome running on the admin's desktop via Chrome DevTools Protocol. Useful for web testing, screenshots, auth flows.
+Sandboxed agents can control Chrome running on the admin's desktop via Chrome DevTools Protocol (CDP). Useful for web testing, screenshots, auth flows.
 
 **1. Launch Chrome with debugging** (as admin):
 
@@ -331,22 +331,25 @@ Sandboxed agents can control Chrome running on the admin's desktop via Chrome De
 open -a "Google Chrome" --args --remote-debugging-port=9222
 ```
 
-Or add `--remote-debugging-port=9222` to Chrome's launch flags permanently.
+Or make it permanent:
+```bash
+defaults write com.google.Chrome CommandLineArguments -array "--remote-debugging-port=9222"
+```
 
-**2. Add Chrome MCP to your config** (as admin):
-
-The Chrome MCP server is already in `~/.claude.json`:
+**2. Add a CDP-based Chrome MCP server** to your `~/.claude.json`. Use any MCP server that connects via CDP URL (the ecosystem is evolving — check what's current):
 
 ```json
 {
   "mcpServers": {
     "chrome": {
       "command": "npx",
-      "args": ["@anthropic-ai/chrome-mcp@latest", "--cdp-url=http://127.0.0.1:9222"]
+      "args": ["<chrome-cdp-mcp-package>", "--cdp-url=http://127.0.0.1:9222"]
     }
   }
 }
 ```
+
+**Important:** use a package that connects via CDP over the network (`http://127.0.0.1:9222`), not one that uses AppleScript — AppleScript-based packages won't work cross-user.
 
 **3. Copy to sandboxed users:**
 
@@ -357,13 +360,7 @@ iso create acm                   # re-copies MCP config from admin
 This works because:
 - `iso pf` allows all localhost TCP for sandboxed users (local services are admin-controlled)
 - Chrome DevTools listens on `127.0.0.1:9222`
-- `npx` is in `/opt/homebrew/bin` (shared tools)
 - The MCP server config is copied from admin's `.claude.json`
-
-```bash
-iso acm claude
-# Agent can now use Chrome MCP: navigate, screenshot, fill forms, etc.
-```
 
 ## Network Logging
 
