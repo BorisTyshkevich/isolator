@@ -178,12 +178,20 @@ hosts = [
 [users.acm]
 uid = 600
 hosts = ["api.anthropic.com", "sentry.io"]
+log = true                        # log blocked + allowed traffic
 
 [users.click]
 uid = 601
-from = "acm"    # copy config from acm instead of admin
+from = "acm"
 hosts = ["api.openai.com"]
+
+[users.tools]
+uid = 602
+hosts = ["*"]                     # unrestricted network access
 ```
+
+- `hosts = ["*"]` — unrestricted network (no pf/iptables rules for this user)
+- `log = true` — log all traffic via pf log + Docker iptables LOG
 
 Users are auto-added to config when created via `iso create <name>`.
 
