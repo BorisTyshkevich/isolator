@@ -212,6 +212,20 @@ def copy_shell_config(name, source_user, shell_type):
             rc_path.write_text(content + source_line)
 
 
+def copy_launch_services(name, source_user):
+    """Copy default browser and other URL handler preferences."""
+    home = Path(f"/Users/{name}")
+    source_home = Path(f"/Users/{source_user}")
+    src = source_home / "Library/Preferences/com.apple.LaunchServices"
+    dst = home / "Library/Preferences/com.apple.LaunchServices"
+    if src.exists():
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if dst.exists():
+            shutil.rmtree(dst)
+        shutil.copytree(src, dst)
+        print(f"  Copied LaunchServices (default browser)")
+
+
 def copy_claude_config(name, source_user):
     home = Path(f"/Users/{name}")
     source_home = Path(f"/Users/{source_user}")
@@ -602,6 +616,7 @@ def cmd_create(name, config, from_user=None):
 
     setup_home(name, admin)
     copy_shell_config(name, source, shell_type)
+    copy_launch_services(name, source)
     copy_claude_config(name, source)
     copy_codex_config(name, source)
     inject_auth(name, user_config)
