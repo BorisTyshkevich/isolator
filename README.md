@@ -323,38 +323,20 @@ iso click docker ps
 
 ## Chrome MCP (browser access from sandbox)
 
-Sandboxed agents can control Chrome running on the admin's desktop via Chrome DevTools Protocol (CDP). Useful for web testing, screenshots, auth flows.
+Sandboxed agents can control a dedicated Chrome instance via [Chrome DevTools MCP](https://github.com/ChromeDevTools/chrome-devtools-mcp). The agent gets a **clean browser** (empty profile, no cookies, no saved passwords) — your real Chrome is untouched.
 
-**1. Launch Chrome with debugging** (as admin):
+**1. Start agent Chrome** (empty profile, debug port 9222):
 
 ```bash
-open -a "Google Chrome" --args --remote-debugging-port=9222
+iso chrome                       # start
+iso chrome --stop                # stop when done
 ```
 
-Or make it permanent:
-```bash
-defaults write com.google.Chrome CommandLineArguments -array "--remote-debugging-port=9222"
-```
-
-**2. Add the official Chrome DevTools MCP server:**
+**2. Add Chrome DevTools MCP to your admin config:**
 
 ```bash
 claude mcp add chrome-devtools --scope user npx chrome-devtools-mcp@latest
 ```
-
-Or manually in `~/.claude.json`:
-```json
-{
-  "mcpServers": {
-    "chrome-devtools": {
-      "command": "npx",
-      "args": ["chrome-devtools-mcp@latest"]
-    }
-  }
-}
-```
-
-This is Google's official [chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp) — connects via CDP, auto-discovers Chrome on port 9222.
 
 **3. Copy to sandboxed users:**
 
@@ -362,10 +344,19 @@ This is Google's official [chrome-devtools-mcp](https://github.com/ChromeDevTool
 iso create acm                   # re-copies MCP config from admin
 ```
 
-This works because:
-- `iso pf` allows all localhost TCP for sandboxed users (local services are admin-controlled)
-- Chrome DevTools listens on `127.0.0.1:9222`
-- The MCP server config is copied from admin's `.claude.json`
+**4. Use it:**
+
+```bash
+iso acm claude
+# Agent can now navigate, screenshot, fill forms, run browser tests
+```
+
+**Security model:**
+- Agent Chrome runs with an empty profile (`/tmp/chrome-agent`) — no real cookies or passwords
+- Your main Chrome has no debug port — not accessible via CDP
+- `iso pf` allows localhost TCP (local services are admin-controlled)
+- Network isolation still blocks exfiltration to non-whitelisted hosts
+- `/tmp/chrome-agent` is wiped on reboot
 
 ## Network Logging
 

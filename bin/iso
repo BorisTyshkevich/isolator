@@ -13,6 +13,8 @@ Usage:
     iso <user> remote [--bg]          Start sandboxed remote session for Claude Desktop
     iso <user> remote --status        Show remote session status
     iso <user> remote --stop          Stop remote session
+    iso chrome                        Start agent Chrome (empty profile, port 9222)
+    iso chrome --stop                 Stop agent Chrome
 
 Options for create:
     --from USER                       Copy config from USER (default: admin)
@@ -21,9 +23,9 @@ Options for create:
 
 Examples:
     iso create acm --keychain
-    iso acm claude
-    iso acm remote                    # connect from Claude Desktop
-    iso acm remote --bg               # start in background
+    iso chrome                        # start safe browser for agents
+    iso acm claude                    # agent can use Chrome via MCP
+    iso acm remote --bg               # connect from Claude Desktop
     iso delete acm
     iso pf
 """
@@ -909,6 +911,45 @@ def cmd_remote(user, args):
         os.execvp("sudo", remote_cmd)
 
 
+# ── Chrome command ──────────────────────────────────────────────────────────
+
+CHROME_APP = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+CHROME_AGENT_DIR = "/tmp/chrome-agent"
+CHROME_PID_FILE = Path("/tmp/isolator-chrome-agent.pid")
+CHROME_DEBUG_PORT = 9222
+
+
+def cmd_chrome(args):
+    """Start or stop a dedicated agent Chrome (empty profile, debug port)."""
+    if "--stop" in args:
+        if not CHROME_PID_FILE.exists():
+            print("No agent Chrome running")
+            return
+        pid = int(CHROME_PID_FILE.read_text().strip())
+        subprocess.run(["kill", str(pid)], capture_output=True)
+        CHROME_PID_FILE.unlink(missing_ok=True)
+        print(f"Stopped agent Chrome (pid {pid})")
+        return
+
+    # Check if already running
+    r = subprocess.run(["curl", "-s", f"http://127.0.0.1:{CHROME_DEBUG_PORT}/json/version"],
+                       capture_output=True, text=True)
+    if r.returncode == 0 and "Chrome" in r.stdout:
+        print(f"Agent Chrome already running on port {CHROME_DEBUG_PORT}")
+        return
+
+    proc = subprocess.Popen(
+        [CHROME_APP,
+         f"--user-data-dir={CHROME_AGENT_DIR}",
+         f"--remote-debugging-port={CHROME_DEBUG_PORT}",
+         "--no-first-run"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    CHROME_PID_FILE.write_text(str(proc.pid))
+    print(f"Started agent Chrome (pid {proc.pid}, port {CHROME_DEBUG_PORT})")
+    print(f"  Empty profile: {CHROME_AGENT_DIR}")
+    print(f"  DevTools: http://127.0.0.1:{CHROME_DEBUG_PORT}")
+
+
 # ── List command ────────────────────────────────────────────────────────────
 
 def cmd_list(config):
@@ -925,7 +966,7 @@ def cmd_list(config):
 
 # ── Main ────────────────────────────────────────────────────────────────────
 
-SUBCOMMANDS = {"create", "delete", "pf", "list"}
+SUBCOMMANDS = {"create", "delete", "pf", "list", "chrome"}
 
 
 def parse_create_args(args):
@@ -965,8 +1006,8 @@ def main():
         cmd_run(subcmd, cmd, sys.argv[3:])
         return
 
-    # Everything below requires root
-    if subcmd != "list" and os.geteuid() != 0:
+    # Everything below requires root (except list and chrome)
+    if subcmd not in ("list", "chrome") and os.geteuid() != 0:
         # Re-exec with sudo
         os.execvp("sudo", ["sudo"] + sys.argv)
 
@@ -997,6 +1038,9 @@ def main():
     elif subcmd == "pf":
         dry_run = "--dry-run" in sys.argv
         cmd_pf(config, dry_run)
+
+    elif subcmd == "chrome":
+        cmd_chrome(sys.argv[2:])
 
     elif subcmd == "list":
         cmd_list(config)

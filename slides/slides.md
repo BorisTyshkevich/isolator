@@ -327,6 +327,27 @@ docker run --network=iso-acm clickhouse    # ✅ starts
 
 ---
 
+## Safe Browser Access for Agents
+
+Agents need browsers for testing, auth flows, and screenshots.
+But giving an agent your real Chrome = access to all your cookies and passwords.
+
+**Solution:** dedicated agent Chrome with an empty profile:
+
+```bash
+iso chrome              # starts Chrome with empty profile on port 9222
+iso acm claude          # agent connects via Chrome DevTools MCP
+```
+
+| | Your Chrome | Agent Chrome |
+|---|---|---|
+| Profile | Your bookmarks, passwords, cookies | Empty (`/tmp/chrome-agent`) |
+| Debug port | None — not accessible | `localhost:9222` via CDP |
+| Agent access | No | Yes, via MCP |
+| On reboot | Persists | Wiped |
+
+---
+
 ## Backups: Don't Leak Your Chat Transcripts
 
 Time Machine runs as **root** — it ignores all isolation and backs up everything.
