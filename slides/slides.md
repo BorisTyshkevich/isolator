@@ -232,41 +232,6 @@ Shared tools (read-only):
 
 ---
 
-## Security Layers
-
-| Layer | Mechanism | Agent can bypass? |
-|-------|-----------|:-:|
-| **Filesystem** | chmod 700 + root-set ACL | No |
-| **Network** | pf firewall by UID | No (kernel) |
-| **No escalation** | No password, no sudoers | No |
-| **Config** | Root-owned, chmod 444 | No |
-| **Your home** | Standard Unix DAC | No |
-| **Your tools** | World-readable, not writable | No |
-
-The agent has full autonomy **within its sandbox**.
-No permission prompts. No interruptions. No risk.
-
----
-
-## Three Dimensions of Isolation
-
-| Dimension | Threat | macOS Solution | Linux Solution |
-|-----------|--------|---------------|----------------|
-| **Files** | Read `~/.ssh`, `~/.aws` | chmod 700 + ACL | chmod 700 + ACL |
-| **Network** | Exfiltrate to `evil.com` | pf by UID | Network namespace + proxy |
-| **Processes** | Access admin's Docker, Chrome | Per-resource isolation | PID namespace |
-
-macOS has no PID namespaces — agents can `ps aux` and see everything.
-But **seeing** a process ≠ **controlling** it. Access requires a channel:
-
-| Process | Channel | Isolator's fix |
-|---------|---------|---------------|
-| Docker daemon | `/var/run/docker.sock` | Per-user networks + iptables egress |
-| Chrome browser | CDP on `localhost:9222` | Dedicated empty-profile browser (`iso chrome`) |
-| Other services | localhost ports | pf allows localhost (admin-controlled) |
-
----
-
 ## Usage
 
 ```bash
@@ -399,6 +364,38 @@ iso acm remote          # starts claude --remote as sandboxed user
 - You get Desktop's full UI — file preview, diffs, images, rich markdown.
 - Each session: **sandboxed**, **persistent** (survives terminal disconnect), **independent**.
 - Connect from Claude Desktop tabs. Switch between projects instantly.
+
+---
+
+## Security Layers
+
+| Layer | Mechanism | Agent can bypass? |
+|-------|-----------|:-:|
+| **Filesystem** | chmod 700 + root-set ACL | No |
+| **Network** | pf firewall by UID | No (kernel) |
+| **No escalation** | No password, no sudoers | No |
+| **Config** | Root-owned, chmod 444 | No |
+| **Your home** | Standard Unix DAC | No |
+| **Your tools** | World-readable, not writable | No |
+
+---
+
+## Three Dimensions of Isolation
+
+| Dimension | Threat | macOS Solution | Linux Solution |
+|-----------|--------|---------------|----------------|
+| **Files** | Read `~/.ssh`, `~/.aws` | chmod 700 + ACL | chmod 700 + ACL |
+| **Network** | Exfiltrate to `evil.com` | pf by UID | Network namespace + proxy |
+| **Processes** | Access admin's Docker, Chrome | Per-resource isolation | PID namespace |
+
+macOS has no PID namespaces — agents can `ps aux` and see everything.
+But **seeing** a process ≠ **controlling** it. Access requires a channel:
+
+| Process | Channel | Isolator's fix |
+|---------|---------|---------------|
+| Docker daemon | `/var/run/docker.sock` | Per-user networks + iptables egress |
+| Chrome browser | CDP on `localhost:9222` | Dedicated empty-profile browser (`iso chrome`) |
+| Other services | localhost ports | pf allows localhost (admin-controlled) |
 
 ---
 

@@ -1212,50 +1212,23 @@ section.lead p {
   color: #86868b;
 }
 ;color:#1d1d1f;background-color:#ffffff;background-image:none;" data-marpit-pagination-total="21">
-<h2 id="security-layers">Security Layers</h2>
-<table>
-<thead>
-<tr>
-<th>Layer</th>
-<th>Mechanism</th>
-<th style="text-align:center">Agent can bypass?</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><strong>Filesystem</strong></td>
-<td>chmod 700 + root-set ACL</td>
-<td style="text-align:center">No</td>
-</tr>
-<tr>
-<td><strong>Network</strong></td>
-<td>pf firewall by UID</td>
-<td style="text-align:center">No (kernel)</td>
-</tr>
-<tr>
-<td><strong>No escalation</strong></td>
-<td>No password, no sudoers</td>
-<td style="text-align:center">No</td>
-</tr>
-<tr>
-<td><strong>Config</strong></td>
-<td>Root-owned, chmod 444</td>
-<td style="text-align:center">No</td>
-</tr>
-<tr>
-<td><strong>Your home</strong></td>
-<td>Standard Unix DAC</td>
-<td style="text-align:center">No</td>
-</tr>
-<tr>
-<td><strong>Your tools</strong></td>
-<td>World-readable, not writable</td>
-<td style="text-align:center">No</td>
-</tr>
-</tbody>
-</table>
-<p>The agent has full autonomy <strong>within its sandbox</strong>.<br />
-No permission prompts. No interruptions. No risk.</p>
+<h2 id="usage">Usage</h2>
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-bash"><span class="hljs-comment"># One-time setup</span>
+iso create acm --keychain-pass ttt
+iso create click --keychain-pass ttt
+iso pf
+
+<span class="hljs-comment"># Run agents</span>
+iso acm claude                    <span class="hljs-comment"># Claude on ACM project</span>
+iso click codex                   <span class="hljs-comment"># Codex on ClickHouse</span>
+
+<span class="hljs-comment"># Read their work from your account</span>
+<span class="hljs-built_in">cat</span> /Users/acm/workspace/main.py
+
+<span class="hljs-comment"># Refresh config after changes</span>
+iso create acm                    <span class="hljs-comment"># re-copies shell/claude config</span>
+iso pf                            <span class="hljs-comment"># refresh firewall rules</span>
+</code></pre>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="13" data-paginate="true" data-background-color="#ffffff" data-color="#1d1d1f" data-theme="default" data-style="section {
   font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
@@ -1301,6 +1274,786 @@ section.lead p {
   color: #86868b;
 }
 " lang="en-US" data-marpit-pagination="13" style="--paginate:true;--background-color:#ffffff;--color:#1d1d1f;--theme:default;--style:section {
+  font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
+  font-size: 28px;
+}
+h1, h2 {
+  color: #0071e3;
+}
+code {
+  background: #f5f5f7;
+  color: #d63384;
+  font-size: 22px;
+}
+pre {
+  background: #f5f5f7 !important;
+  border-radius: 8px;
+  font-size: 20px;
+  color: #1d1d1f;
+}
+table {
+  font-size: 24px;
+}
+th {
+  background: #0071e3;
+  color: #fff;
+}
+td {
+  background: #f5f5f7;
+}
+strong {
+  color: #e3002b;
+}
+a {
+  color: #0071e3;
+}
+section.lead h1 {
+  font-size: 52px;
+  text-align: center;
+}
+section.lead p {
+  text-align: center;
+  font-size: 24px;
+  color: #86868b;
+}
+;color:#1d1d1f;background-color:#ffffff;background-image:none;" data-marpit-pagination-total="21">
+<h2 id="why-not-other-approaches">Why Not Other Approaches?</h2>
+<table>
+<thead>
+<tr>
+<th>Approach</th>
+<th>Problem</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Agent's built-in sandbox</td>
+<td>Self-policing, fragile, per-agent</td>
+</tr>
+<tr>
+<td>Docker on macOS</td>
+<td>VM overhead, no native tools</td>
+</tr>
+<tr>
+<td>Full VM</td>
+<td>Heavy, slow, no tool sharing</td>
+</tr>
+<tr>
+<td>nsjail / firejail</td>
+<td>Linux only</td>
+</tr>
+<tr>
+<td>macOS App Sandbox</td>
+<td>Requires signed app bundle</td>
+</tr>
+<tr>
+<td><strong>Unix users + pf</strong></td>
+<td><strong>Native, zero overhead, battle-tested</strong></td>
+</tr>
+</tbody>
+</table>
+</section>
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="14" data-paginate="true" data-background-color="#ffffff" data-color="#1d1d1f" data-theme="default" data-style="section {
+  font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
+  font-size: 28px;
+}
+h1, h2 {
+  color: #0071e3;
+}
+code {
+  background: #f5f5f7;
+  color: #d63384;
+  font-size: 22px;
+}
+pre {
+  background: #f5f5f7 !important;
+  border-radius: 8px;
+  font-size: 20px;
+  color: #1d1d1f;
+}
+table {
+  font-size: 24px;
+}
+th {
+  background: #0071e3;
+  color: #fff;
+}
+td {
+  background: #f5f5f7;
+}
+strong {
+  color: #e3002b;
+}
+a {
+  color: #0071e3;
+}
+section.lead h1 {
+  font-size: 52px;
+  text-align: center;
+}
+section.lead p {
+  text-align: center;
+  font-size: 24px;
+  color: #86868b;
+}
+" lang="en-US" data-marpit-pagination="14" style="--paginate:true;--background-color:#ffffff;--color:#1d1d1f;--theme:default;--style:section {
+  font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
+  font-size: 28px;
+}
+h1, h2 {
+  color: #0071e3;
+}
+code {
+  background: #f5f5f7;
+  color: #d63384;
+  font-size: 22px;
+}
+pre {
+  background: #f5f5f7 !important;
+  border-radius: 8px;
+  font-size: 20px;
+  color: #1d1d1f;
+}
+table {
+  font-size: 24px;
+}
+th {
+  background: #0071e3;
+  color: #fff;
+}
+td {
+  background: #f5f5f7;
+}
+strong {
+  color: #e3002b;
+}
+a {
+  color: #0071e3;
+}
+section.lead h1 {
+  font-size: 52px;
+  text-align: center;
+}
+section.lead p {
+  text-align: center;
+  font-size: 24px;
+  color: #86868b;
+}
+;color:#1d1d1f;background-color:#ffffff;background-image:none;" data-marpit-pagination-total="21">
+<h2 id="but-what-about-docker-agents-need-it">But What About Docker? Agents Need It.</h2>
+<p>AI agents don't just write code — they <strong>build and test</strong> it.</p>
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-bash">docker-compose up -d    <span class="hljs-comment"># start ClickHouse, Postgres, Redis</span>
+npm <span class="hljs-built_in">test</span>                <span class="hljs-comment"># integration tests hit real services</span>
+</code></pre>
+<p><strong>The problem:</strong></p>
+<ul>
+<li>Docker containers run inside a Linux VM by <code>main</code> user</li>
+<li>macOS <code>pf</code> rules (by UID) don't apply. An agent can <code>docker run curl evil.com</code>.</li>
+</ul>
+<p><strong>The solution:</strong></p>
+<ul>
+<li>hardlink docker socket to /var</li>
+<li>limit docker network by iptables</li>
+</ul>
+</section>
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="15" data-paginate="true" data-background-color="#ffffff" data-color="#1d1d1f" data-theme="default" data-style="section {
+  font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
+  font-size: 28px;
+}
+h1, h2 {
+  color: #0071e3;
+}
+code {
+  background: #f5f5f7;
+  color: #d63384;
+  font-size: 22px;
+}
+pre {
+  background: #f5f5f7 !important;
+  border-radius: 8px;
+  font-size: 20px;
+  color: #1d1d1f;
+}
+table {
+  font-size: 24px;
+}
+th {
+  background: #0071e3;
+  color: #fff;
+}
+td {
+  background: #f5f5f7;
+}
+strong {
+  color: #e3002b;
+}
+a {
+  color: #0071e3;
+}
+section.lead h1 {
+  font-size: 52px;
+  text-align: center;
+}
+section.lead p {
+  text-align: center;
+  font-size: 24px;
+  color: #86868b;
+}
+" lang="en-US" data-marpit-pagination="15" style="--paginate:true;--background-color:#ffffff;--color:#1d1d1f;--theme:default;--style:section {
+  font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
+  font-size: 28px;
+}
+h1, h2 {
+  color: #0071e3;
+}
+code {
+  background: #f5f5f7;
+  color: #d63384;
+  font-size: 22px;
+}
+pre {
+  background: #f5f5f7 !important;
+  border-radius: 8px;
+  font-size: 20px;
+  color: #1d1d1f;
+}
+table {
+  font-size: 24px;
+}
+th {
+  background: #0071e3;
+  color: #fff;
+}
+td {
+  background: #f5f5f7;
+}
+strong {
+  color: #e3002b;
+}
+a {
+  color: #0071e3;
+}
+section.lead h1 {
+  font-size: 52px;
+  text-align: center;
+}
+section.lead p {
+  text-align: center;
+  font-size: 24px;
+  color: #86868b;
+}
+;color:#1d1d1f;background-color:#ffffff;background-image:none;" data-marpit-pagination-total="21">
+<h2 id="docker-network-isolation">Docker Network Isolation</h2>
+<p>Per-user Docker networks with iptables egress rules inside the VM:</p>
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code>iso-acm network (172.30.0.0/24)
+  ├── ACCEPT  container → container     <img class="emoji" draggable="false" alt="✅" src="https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.2/assets/svg/2705.svg" data-marp-twemoji=""/> same subnet
+  ├── ACCEPT  container → DNS           <img class="emoji" draggable="false" alt="✅" src="https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.2/assets/svg/2705.svg" data-marp-twemoji=""/> port 53
+  ├── ACCEPT  container → whitelisted   <img class="emoji" draggable="false" alt="✅" src="https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.2/assets/svg/2705.svg" data-marp-twemoji=""/> from config.toml
+  └── DROP    container → *             <img class="emoji" draggable="false" alt="❌" src="https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.2/assets/svg/274c.svg" data-marp-twemoji=""/> everything else
+</code></pre>
+<p><code>docker pull</code> still works — it's a <strong>daemon</strong> operation, not container traffic.</p>
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-bash">docker pull clickhouse/clickhouse-server   <span class="hljs-comment"># <img class="emoji" draggable="false" alt="✅" src="https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.2/assets/svg/2705.svg" data-marp-twemoji=""/> daemon pulls</span>
+docker run --network=iso-acm clickhouse    <span class="hljs-comment"># <img class="emoji" draggable="false" alt="✅" src="https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.2/assets/svg/2705.svg" data-marp-twemoji=""/> starts</span>
+<span class="hljs-comment"># container curl evil.com                  # <img class="emoji" draggable="false" alt="❌" src="https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.2/assets/svg/274c.svg" data-marp-twemoji=""/> blocked by iptables</span>
+</code></pre>
+<p><code>iso pf</code> generates <strong>both</strong> macOS pf rules and Docker iptables rules from the same config.</p>
+</section>
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="16" data-paginate="true" data-background-color="#ffffff" data-color="#1d1d1f" data-theme="default" data-style="section {
+  font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
+  font-size: 28px;
+}
+h1, h2 {
+  color: #0071e3;
+}
+code {
+  background: #f5f5f7;
+  color: #d63384;
+  font-size: 22px;
+}
+pre {
+  background: #f5f5f7 !important;
+  border-radius: 8px;
+  font-size: 20px;
+  color: #1d1d1f;
+}
+table {
+  font-size: 24px;
+}
+th {
+  background: #0071e3;
+  color: #fff;
+}
+td {
+  background: #f5f5f7;
+}
+strong {
+  color: #e3002b;
+}
+a {
+  color: #0071e3;
+}
+section.lead h1 {
+  font-size: 52px;
+  text-align: center;
+}
+section.lead p {
+  text-align: center;
+  font-size: 24px;
+  color: #86868b;
+}
+" lang="en-US" data-marpit-pagination="16" style="--paginate:true;--background-color:#ffffff;--color:#1d1d1f;--theme:default;--style:section {
+  font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
+  font-size: 28px;
+}
+h1, h2 {
+  color: #0071e3;
+}
+code {
+  background: #f5f5f7;
+  color: #d63384;
+  font-size: 22px;
+}
+pre {
+  background: #f5f5f7 !important;
+  border-radius: 8px;
+  font-size: 20px;
+  color: #1d1d1f;
+}
+table {
+  font-size: 24px;
+}
+th {
+  background: #0071e3;
+  color: #fff;
+}
+td {
+  background: #f5f5f7;
+}
+strong {
+  color: #e3002b;
+}
+a {
+  color: #0071e3;
+}
+section.lead h1 {
+  font-size: 52px;
+  text-align: center;
+}
+section.lead p {
+  text-align: center;
+  font-size: 24px;
+  color: #86868b;
+}
+;color:#1d1d1f;background-color:#ffffff;background-image:none;" data-marpit-pagination-total="21">
+<h2 id="safe-browser-access-for-agents">Safe Browser Access for Agents</h2>
+<p>Agents need browsers for testing, auth flows, and screenshots.<br />
+But giving an agent your real Chrome = access to all your cookies and passwords.</p>
+<p><strong>Solution:</strong> dedicated agent Chrome with an empty profile:</p>
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-bash">iso chrome              <span class="hljs-comment"># starts Chrome with empty profile on port 9222</span>
+iso acm claude          <span class="hljs-comment"># agent connects via Chrome DevTools MCP</span>
+</code></pre>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Your Chrome</th>
+<th>Agent Chrome</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Profile</td>
+<td>Your bookmarks, passwords, cookies</td>
+<td>Empty (<code>/tmp/chrome-agent</code>)</td>
+</tr>
+<tr>
+<td>Debug port</td>
+<td>None — not accessible</td>
+<td><code>localhost:9222</code> via CDP</td>
+</tr>
+<tr>
+<td>Agent access</td>
+<td>No</td>
+<td>Yes, via MCP</td>
+</tr>
+<tr>
+<td>On reboot</td>
+<td>Persists</td>
+<td>Wiped</td>
+</tr>
+</tbody>
+</table>
+</section>
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="17" data-paginate="true" data-background-color="#ffffff" data-color="#1d1d1f" data-theme="default" data-style="section {
+  font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
+  font-size: 28px;
+}
+h1, h2 {
+  color: #0071e3;
+}
+code {
+  background: #f5f5f7;
+  color: #d63384;
+  font-size: 22px;
+}
+pre {
+  background: #f5f5f7 !important;
+  border-radius: 8px;
+  font-size: 20px;
+  color: #1d1d1f;
+}
+table {
+  font-size: 24px;
+}
+th {
+  background: #0071e3;
+  color: #fff;
+}
+td {
+  background: #f5f5f7;
+}
+strong {
+  color: #e3002b;
+}
+a {
+  color: #0071e3;
+}
+section.lead h1 {
+  font-size: 52px;
+  text-align: center;
+}
+section.lead p {
+  text-align: center;
+  font-size: 24px;
+  color: #86868b;
+}
+" lang="en-US" data-marpit-pagination="17" style="--paginate:true;--background-color:#ffffff;--color:#1d1d1f;--theme:default;--style:section {
+  font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
+  font-size: 28px;
+}
+h1, h2 {
+  color: #0071e3;
+}
+code {
+  background: #f5f5f7;
+  color: #d63384;
+  font-size: 22px;
+}
+pre {
+  background: #f5f5f7 !important;
+  border-radius: 8px;
+  font-size: 20px;
+  color: #1d1d1f;
+}
+table {
+  font-size: 24px;
+}
+th {
+  background: #0071e3;
+  color: #fff;
+}
+td {
+  background: #f5f5f7;
+}
+strong {
+  color: #e3002b;
+}
+a {
+  color: #0071e3;
+}
+section.lead h1 {
+  font-size: 52px;
+  text-align: center;
+}
+section.lead p {
+  text-align: center;
+  font-size: 24px;
+  color: #86868b;
+}
+;color:#1d1d1f;background-color:#ffffff;background-image:none;" data-marpit-pagination-total="21">
+<h2 id="backups-dont-leak-your-chat-transcripts">Backups: Don't Leak Your Chat Transcripts</h2>
+<p>Time Machine runs as <strong>root</strong> — it ignores all isolation and backs up everything.</p>
+<p>By default, every agent session — chat history, credentials, workspace — ends up on your backup drive. Multiple sandboxed users <strong>multiply</strong> the problem.</p>
+<p><code>iso create</code> auto-excludes each sandboxed home from Time Machine:</p>
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-bash">tmutil addexclusion /Users/acm    <span class="hljs-comment"># runs automatically</span>
+</code></pre>
+<p>Your agent's work is ephemeral. <strong>Push to git, don't rely on backups.</strong></p>
+</section>
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="18" data-paginate="true" data-background-color="#ffffff" data-color="#1d1d1f" data-theme="default" data-style="section {
+  font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
+  font-size: 28px;
+}
+h1, h2 {
+  color: #0071e3;
+}
+code {
+  background: #f5f5f7;
+  color: #d63384;
+  font-size: 22px;
+}
+pre {
+  background: #f5f5f7 !important;
+  border-radius: 8px;
+  font-size: 20px;
+  color: #1d1d1f;
+}
+table {
+  font-size: 24px;
+}
+th {
+  background: #0071e3;
+  color: #fff;
+}
+td {
+  background: #f5f5f7;
+}
+strong {
+  color: #e3002b;
+}
+a {
+  color: #0071e3;
+}
+section.lead h1 {
+  font-size: 52px;
+  text-align: center;
+}
+section.lead p {
+  text-align: center;
+  font-size: 24px;
+  color: #86868b;
+}
+" lang="en-US" data-marpit-pagination="18" style="--paginate:true;--background-color:#ffffff;--color:#1d1d1f;--theme:default;--style:section {
+  font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
+  font-size: 28px;
+}
+h1, h2 {
+  color: #0071e3;
+}
+code {
+  background: #f5f5f7;
+  color: #d63384;
+  font-size: 22px;
+}
+pre {
+  background: #f5f5f7 !important;
+  border-radius: 8px;
+  font-size: 20px;
+  color: #1d1d1f;
+}
+table {
+  font-size: 24px;
+}
+th {
+  background: #0071e3;
+  color: #fff;
+}
+td {
+  background: #f5f5f7;
+}
+strong {
+  color: #e3002b;
+}
+a {
+  color: #0071e3;
+}
+section.lead h1 {
+  font-size: 52px;
+  text-align: center;
+}
+section.lead p {
+  text-align: center;
+  font-size: 24px;
+  color: #86868b;
+}
+;color:#1d1d1f;background-color:#ffffff;background-image:none;" data-marpit-pagination-total="21">
+<h2 id="claude-desktop--sandboxed-agent">Claude Desktop + Sandboxed Agent</h2>
+<p>Claude Desktop has built-in permissions and <code>/sandbox</code> mode — but it's <strong>self-policing</strong>.<br />
+The agent enforces its own restrictions. Isolator enforces at the <strong>OS level</strong>.</p>
+<p><strong>Best of both:</strong> run the agent sandboxed, connect from Desktop:</p>
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-bash">iso acm remote          <span class="hljs-comment"># starts claude --remote as sandboxed user</span>
+                        <span class="hljs-comment"># prints connection URL → paste into Desktop</span>
+</code></pre>
+<ul>
+<li>The agent runs as <code>acm</code> — filesystem isolation, network whitelist, read-only config.</li>
+<li>You get Desktop's full UI — file preview, diffs, images, rich markdown.</li>
+<li>Each session: <strong>sandboxed</strong>, <strong>persistent</strong> (survives terminal disconnect), <strong>independent</strong>.</li>
+<li>Connect from Claude Desktop tabs. Switch between projects instantly.</li>
+</ul>
+</section>
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="19" data-paginate="true" data-background-color="#ffffff" data-color="#1d1d1f" data-theme="default" data-style="section {
+  font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
+  font-size: 28px;
+}
+h1, h2 {
+  color: #0071e3;
+}
+code {
+  background: #f5f5f7;
+  color: #d63384;
+  font-size: 22px;
+}
+pre {
+  background: #f5f5f7 !important;
+  border-radius: 8px;
+  font-size: 20px;
+  color: #1d1d1f;
+}
+table {
+  font-size: 24px;
+}
+th {
+  background: #0071e3;
+  color: #fff;
+}
+td {
+  background: #f5f5f7;
+}
+strong {
+  color: #e3002b;
+}
+a {
+  color: #0071e3;
+}
+section.lead h1 {
+  font-size: 52px;
+  text-align: center;
+}
+section.lead p {
+  text-align: center;
+  font-size: 24px;
+  color: #86868b;
+}
+" lang="en-US" data-marpit-pagination="19" style="--paginate:true;--background-color:#ffffff;--color:#1d1d1f;--theme:default;--style:section {
+  font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
+  font-size: 28px;
+}
+h1, h2 {
+  color: #0071e3;
+}
+code {
+  background: #f5f5f7;
+  color: #d63384;
+  font-size: 22px;
+}
+pre {
+  background: #f5f5f7 !important;
+  border-radius: 8px;
+  font-size: 20px;
+  color: #1d1d1f;
+}
+table {
+  font-size: 24px;
+}
+th {
+  background: #0071e3;
+  color: #fff;
+}
+td {
+  background: #f5f5f7;
+}
+strong {
+  color: #e3002b;
+}
+a {
+  color: #0071e3;
+}
+section.lead h1 {
+  font-size: 52px;
+  text-align: center;
+}
+section.lead p {
+  text-align: center;
+  font-size: 24px;
+  color: #86868b;
+}
+;color:#1d1d1f;background-color:#ffffff;background-image:none;" data-marpit-pagination-total="21">
+<h2 id="security-layers">Security Layers</h2>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Mechanism</th>
+<th style="text-align:center">Agent can bypass?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Filesystem</strong></td>
+<td>chmod 700 + root-set ACL</td>
+<td style="text-align:center">No</td>
+</tr>
+<tr>
+<td><strong>Network</strong></td>
+<td>pf firewall by UID</td>
+<td style="text-align:center">No (kernel)</td>
+</tr>
+<tr>
+<td><strong>No escalation</strong></td>
+<td>No password, no sudoers</td>
+<td style="text-align:center">No</td>
+</tr>
+<tr>
+<td><strong>Config</strong></td>
+<td>Root-owned, chmod 444</td>
+<td style="text-align:center">No</td>
+</tr>
+<tr>
+<td><strong>Your home</strong></td>
+<td>Standard Unix DAC</td>
+<td style="text-align:center">No</td>
+</tr>
+<tr>
+<td><strong>Your tools</strong></td>
+<td>World-readable, not writable</td>
+<td style="text-align:center">No</td>
+</tr>
+</tbody>
+</table>
+</section>
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="20" data-paginate="true" data-background-color="#ffffff" data-color="#1d1d1f" data-theme="default" data-style="section {
+  font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
+  font-size: 28px;
+}
+h1, h2 {
+  color: #0071e3;
+}
+code {
+  background: #f5f5f7;
+  color: #d63384;
+  font-size: 22px;
+}
+pre {
+  background: #f5f5f7 !important;
+  border-radius: 8px;
+  font-size: 20px;
+  color: #1d1d1f;
+}
+table {
+  font-size: 24px;
+}
+th {
+  background: #0071e3;
+  color: #fff;
+}
+td {
+  background: #f5f5f7;
+}
+strong {
+  color: #e3002b;
+}
+a {
+  color: #0071e3;
+}
+section.lead h1 {
+  font-size: 52px;
+  text-align: center;
+}
+section.lead p {
+  text-align: center;
+  font-size: 24px;
+  color: #86868b;
+}
+" lang="en-US" data-marpit-pagination="20" style="--paginate:true;--background-color:#ffffff;--color:#1d1d1f;--theme:default;--style:section {
   font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
   font-size: 28px;
 }
@@ -1403,761 +2156,6 @@ But <strong>seeing</strong> a process ≠ <strong>controlling</strong> it. Acces
 </tr>
 </tbody>
 </table>
-</section>
-</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="14" data-paginate="true" data-background-color="#ffffff" data-color="#1d1d1f" data-theme="default" data-style="section {
-  font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
-  font-size: 28px;
-}
-h1, h2 {
-  color: #0071e3;
-}
-code {
-  background: #f5f5f7;
-  color: #d63384;
-  font-size: 22px;
-}
-pre {
-  background: #f5f5f7 !important;
-  border-radius: 8px;
-  font-size: 20px;
-  color: #1d1d1f;
-}
-table {
-  font-size: 24px;
-}
-th {
-  background: #0071e3;
-  color: #fff;
-}
-td {
-  background: #f5f5f7;
-}
-strong {
-  color: #e3002b;
-}
-a {
-  color: #0071e3;
-}
-section.lead h1 {
-  font-size: 52px;
-  text-align: center;
-}
-section.lead p {
-  text-align: center;
-  font-size: 24px;
-  color: #86868b;
-}
-" lang="en-US" data-marpit-pagination="14" style="--paginate:true;--background-color:#ffffff;--color:#1d1d1f;--theme:default;--style:section {
-  font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
-  font-size: 28px;
-}
-h1, h2 {
-  color: #0071e3;
-}
-code {
-  background: #f5f5f7;
-  color: #d63384;
-  font-size: 22px;
-}
-pre {
-  background: #f5f5f7 !important;
-  border-radius: 8px;
-  font-size: 20px;
-  color: #1d1d1f;
-}
-table {
-  font-size: 24px;
-}
-th {
-  background: #0071e3;
-  color: #fff;
-}
-td {
-  background: #f5f5f7;
-}
-strong {
-  color: #e3002b;
-}
-a {
-  color: #0071e3;
-}
-section.lead h1 {
-  font-size: 52px;
-  text-align: center;
-}
-section.lead p {
-  text-align: center;
-  font-size: 24px;
-  color: #86868b;
-}
-;color:#1d1d1f;background-color:#ffffff;background-image:none;" data-marpit-pagination-total="21">
-<h2 id="usage">Usage</h2>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-bash"><span class="hljs-comment"># One-time setup</span>
-iso create acm --keychain-pass ttt
-iso create click --keychain-pass ttt
-iso pf
-
-<span class="hljs-comment"># Run agents</span>
-iso acm claude                    <span class="hljs-comment"># Claude on ACM project</span>
-iso click codex                   <span class="hljs-comment"># Codex on ClickHouse</span>
-
-<span class="hljs-comment"># Read their work from your account</span>
-<span class="hljs-built_in">cat</span> /Users/acm/workspace/main.py
-
-<span class="hljs-comment"># Refresh config after changes</span>
-iso create acm                    <span class="hljs-comment"># re-copies shell/claude config</span>
-iso pf                            <span class="hljs-comment"># refresh firewall rules</span>
-</code></pre>
-</section>
-</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="15" data-paginate="true" data-background-color="#ffffff" data-color="#1d1d1f" data-theme="default" data-style="section {
-  font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
-  font-size: 28px;
-}
-h1, h2 {
-  color: #0071e3;
-}
-code {
-  background: #f5f5f7;
-  color: #d63384;
-  font-size: 22px;
-}
-pre {
-  background: #f5f5f7 !important;
-  border-radius: 8px;
-  font-size: 20px;
-  color: #1d1d1f;
-}
-table {
-  font-size: 24px;
-}
-th {
-  background: #0071e3;
-  color: #fff;
-}
-td {
-  background: #f5f5f7;
-}
-strong {
-  color: #e3002b;
-}
-a {
-  color: #0071e3;
-}
-section.lead h1 {
-  font-size: 52px;
-  text-align: center;
-}
-section.lead p {
-  text-align: center;
-  font-size: 24px;
-  color: #86868b;
-}
-" lang="en-US" data-marpit-pagination="15" style="--paginate:true;--background-color:#ffffff;--color:#1d1d1f;--theme:default;--style:section {
-  font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
-  font-size: 28px;
-}
-h1, h2 {
-  color: #0071e3;
-}
-code {
-  background: #f5f5f7;
-  color: #d63384;
-  font-size: 22px;
-}
-pre {
-  background: #f5f5f7 !important;
-  border-radius: 8px;
-  font-size: 20px;
-  color: #1d1d1f;
-}
-table {
-  font-size: 24px;
-}
-th {
-  background: #0071e3;
-  color: #fff;
-}
-td {
-  background: #f5f5f7;
-}
-strong {
-  color: #e3002b;
-}
-a {
-  color: #0071e3;
-}
-section.lead h1 {
-  font-size: 52px;
-  text-align: center;
-}
-section.lead p {
-  text-align: center;
-  font-size: 24px;
-  color: #86868b;
-}
-;color:#1d1d1f;background-color:#ffffff;background-image:none;" data-marpit-pagination-total="21">
-<h2 id="why-not-other-approaches">Why Not Other Approaches?</h2>
-<table>
-<thead>
-<tr>
-<th>Approach</th>
-<th>Problem</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Agent's built-in sandbox</td>
-<td>Self-policing, fragile, per-agent</td>
-</tr>
-<tr>
-<td>Docker on macOS</td>
-<td>VM overhead, no native tools</td>
-</tr>
-<tr>
-<td>Full VM</td>
-<td>Heavy, slow, no tool sharing</td>
-</tr>
-<tr>
-<td>nsjail / firejail</td>
-<td>Linux only</td>
-</tr>
-<tr>
-<td>macOS App Sandbox</td>
-<td>Requires signed app bundle</td>
-</tr>
-<tr>
-<td><strong>Unix users + pf</strong></td>
-<td><strong>Native, zero overhead, battle-tested</strong></td>
-</tr>
-</tbody>
-</table>
-</section>
-</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="16" data-paginate="true" data-background-color="#ffffff" data-color="#1d1d1f" data-theme="default" data-style="section {
-  font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
-  font-size: 28px;
-}
-h1, h2 {
-  color: #0071e3;
-}
-code {
-  background: #f5f5f7;
-  color: #d63384;
-  font-size: 22px;
-}
-pre {
-  background: #f5f5f7 !important;
-  border-radius: 8px;
-  font-size: 20px;
-  color: #1d1d1f;
-}
-table {
-  font-size: 24px;
-}
-th {
-  background: #0071e3;
-  color: #fff;
-}
-td {
-  background: #f5f5f7;
-}
-strong {
-  color: #e3002b;
-}
-a {
-  color: #0071e3;
-}
-section.lead h1 {
-  font-size: 52px;
-  text-align: center;
-}
-section.lead p {
-  text-align: center;
-  font-size: 24px;
-  color: #86868b;
-}
-" lang="en-US" data-marpit-pagination="16" style="--paginate:true;--background-color:#ffffff;--color:#1d1d1f;--theme:default;--style:section {
-  font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
-  font-size: 28px;
-}
-h1, h2 {
-  color: #0071e3;
-}
-code {
-  background: #f5f5f7;
-  color: #d63384;
-  font-size: 22px;
-}
-pre {
-  background: #f5f5f7 !important;
-  border-radius: 8px;
-  font-size: 20px;
-  color: #1d1d1f;
-}
-table {
-  font-size: 24px;
-}
-th {
-  background: #0071e3;
-  color: #fff;
-}
-td {
-  background: #f5f5f7;
-}
-strong {
-  color: #e3002b;
-}
-a {
-  color: #0071e3;
-}
-section.lead h1 {
-  font-size: 52px;
-  text-align: center;
-}
-section.lead p {
-  text-align: center;
-  font-size: 24px;
-  color: #86868b;
-}
-;color:#1d1d1f;background-color:#ffffff;background-image:none;" data-marpit-pagination-total="21">
-<h2 id="but-what-about-docker-agents-need-it">But What About Docker? Agents Need It.</h2>
-<p>AI agents don't just write code — they <strong>build and test</strong> it.</p>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-bash">docker-compose up -d    <span class="hljs-comment"># start ClickHouse, Postgres, Redis</span>
-npm <span class="hljs-built_in">test</span>                <span class="hljs-comment"># integration tests hit real services</span>
-</code></pre>
-<p><strong>The problem:</strong></p>
-<ul>
-<li>Docker containers run inside a Linux VM by <code>main</code> user</li>
-<li>macOS <code>pf</code> rules (by UID) don't apply. An agent can <code>docker run curl evil.com</code>.</li>
-</ul>
-<p><strong>The solution:</strong></p>
-<ul>
-<li>hardlink docker socket to /var</li>
-<li>limit docker network by iptables</li>
-</ul>
-</section>
-</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="17" data-paginate="true" data-background-color="#ffffff" data-color="#1d1d1f" data-theme="default" data-style="section {
-  font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
-  font-size: 28px;
-}
-h1, h2 {
-  color: #0071e3;
-}
-code {
-  background: #f5f5f7;
-  color: #d63384;
-  font-size: 22px;
-}
-pre {
-  background: #f5f5f7 !important;
-  border-radius: 8px;
-  font-size: 20px;
-  color: #1d1d1f;
-}
-table {
-  font-size: 24px;
-}
-th {
-  background: #0071e3;
-  color: #fff;
-}
-td {
-  background: #f5f5f7;
-}
-strong {
-  color: #e3002b;
-}
-a {
-  color: #0071e3;
-}
-section.lead h1 {
-  font-size: 52px;
-  text-align: center;
-}
-section.lead p {
-  text-align: center;
-  font-size: 24px;
-  color: #86868b;
-}
-" lang="en-US" data-marpit-pagination="17" style="--paginate:true;--background-color:#ffffff;--color:#1d1d1f;--theme:default;--style:section {
-  font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
-  font-size: 28px;
-}
-h1, h2 {
-  color: #0071e3;
-}
-code {
-  background: #f5f5f7;
-  color: #d63384;
-  font-size: 22px;
-}
-pre {
-  background: #f5f5f7 !important;
-  border-radius: 8px;
-  font-size: 20px;
-  color: #1d1d1f;
-}
-table {
-  font-size: 24px;
-}
-th {
-  background: #0071e3;
-  color: #fff;
-}
-td {
-  background: #f5f5f7;
-}
-strong {
-  color: #e3002b;
-}
-a {
-  color: #0071e3;
-}
-section.lead h1 {
-  font-size: 52px;
-  text-align: center;
-}
-section.lead p {
-  text-align: center;
-  font-size: 24px;
-  color: #86868b;
-}
-;color:#1d1d1f;background-color:#ffffff;background-image:none;" data-marpit-pagination-total="21">
-<h2 id="docker-network-isolation">Docker Network Isolation</h2>
-<p>Per-user Docker networks with iptables egress rules inside the VM:</p>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code>iso-acm network (172.30.0.0/24)
-  ├── ACCEPT  container → container     <img class="emoji" draggable="false" alt="✅" src="https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.2/assets/svg/2705.svg" data-marp-twemoji=""/> same subnet
-  ├── ACCEPT  container → DNS           <img class="emoji" draggable="false" alt="✅" src="https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.2/assets/svg/2705.svg" data-marp-twemoji=""/> port 53
-  ├── ACCEPT  container → whitelisted   <img class="emoji" draggable="false" alt="✅" src="https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.2/assets/svg/2705.svg" data-marp-twemoji=""/> from config.toml
-  └── DROP    container → *             <img class="emoji" draggable="false" alt="❌" src="https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.2/assets/svg/274c.svg" data-marp-twemoji=""/> everything else
-</code></pre>
-<p><code>docker pull</code> still works — it's a <strong>daemon</strong> operation, not container traffic.</p>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-bash">docker pull clickhouse/clickhouse-server   <span class="hljs-comment"># <img class="emoji" draggable="false" alt="✅" src="https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.2/assets/svg/2705.svg" data-marp-twemoji=""/> daemon pulls</span>
-docker run --network=iso-acm clickhouse    <span class="hljs-comment"># <img class="emoji" draggable="false" alt="✅" src="https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.2/assets/svg/2705.svg" data-marp-twemoji=""/> starts</span>
-<span class="hljs-comment"># container curl evil.com                  # <img class="emoji" draggable="false" alt="❌" src="https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.2/assets/svg/274c.svg" data-marp-twemoji=""/> blocked by iptables</span>
-</code></pre>
-<p><code>iso pf</code> generates <strong>both</strong> macOS pf rules and Docker iptables rules from the same config.</p>
-</section>
-</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="18" data-paginate="true" data-background-color="#ffffff" data-color="#1d1d1f" data-theme="default" data-style="section {
-  font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
-  font-size: 28px;
-}
-h1, h2 {
-  color: #0071e3;
-}
-code {
-  background: #f5f5f7;
-  color: #d63384;
-  font-size: 22px;
-}
-pre {
-  background: #f5f5f7 !important;
-  border-radius: 8px;
-  font-size: 20px;
-  color: #1d1d1f;
-}
-table {
-  font-size: 24px;
-}
-th {
-  background: #0071e3;
-  color: #fff;
-}
-td {
-  background: #f5f5f7;
-}
-strong {
-  color: #e3002b;
-}
-a {
-  color: #0071e3;
-}
-section.lead h1 {
-  font-size: 52px;
-  text-align: center;
-}
-section.lead p {
-  text-align: center;
-  font-size: 24px;
-  color: #86868b;
-}
-" lang="en-US" data-marpit-pagination="18" style="--paginate:true;--background-color:#ffffff;--color:#1d1d1f;--theme:default;--style:section {
-  font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
-  font-size: 28px;
-}
-h1, h2 {
-  color: #0071e3;
-}
-code {
-  background: #f5f5f7;
-  color: #d63384;
-  font-size: 22px;
-}
-pre {
-  background: #f5f5f7 !important;
-  border-radius: 8px;
-  font-size: 20px;
-  color: #1d1d1f;
-}
-table {
-  font-size: 24px;
-}
-th {
-  background: #0071e3;
-  color: #fff;
-}
-td {
-  background: #f5f5f7;
-}
-strong {
-  color: #e3002b;
-}
-a {
-  color: #0071e3;
-}
-section.lead h1 {
-  font-size: 52px;
-  text-align: center;
-}
-section.lead p {
-  text-align: center;
-  font-size: 24px;
-  color: #86868b;
-}
-;color:#1d1d1f;background-color:#ffffff;background-image:none;" data-marpit-pagination-total="21">
-<h2 id="safe-browser-access-for-agents">Safe Browser Access for Agents</h2>
-<p>Agents need browsers for testing, auth flows, and screenshots.<br />
-But giving an agent your real Chrome = access to all your cookies and passwords.</p>
-<p><strong>Solution:</strong> dedicated agent Chrome with an empty profile:</p>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-bash">iso chrome              <span class="hljs-comment"># starts Chrome with empty profile on port 9222</span>
-iso acm claude          <span class="hljs-comment"># agent connects via Chrome DevTools MCP</span>
-</code></pre>
-<table>
-<thead>
-<tr>
-<th></th>
-<th>Your Chrome</th>
-<th>Agent Chrome</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Profile</td>
-<td>Your bookmarks, passwords, cookies</td>
-<td>Empty (<code>/tmp/chrome-agent</code>)</td>
-</tr>
-<tr>
-<td>Debug port</td>
-<td>None — not accessible</td>
-<td><code>localhost:9222</code> via CDP</td>
-</tr>
-<tr>
-<td>Agent access</td>
-<td>No</td>
-<td>Yes, via MCP</td>
-</tr>
-<tr>
-<td>On reboot</td>
-<td>Persists</td>
-<td>Wiped</td>
-</tr>
-</tbody>
-</table>
-</section>
-</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="19" data-paginate="true" data-background-color="#ffffff" data-color="#1d1d1f" data-theme="default" data-style="section {
-  font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
-  font-size: 28px;
-}
-h1, h2 {
-  color: #0071e3;
-}
-code {
-  background: #f5f5f7;
-  color: #d63384;
-  font-size: 22px;
-}
-pre {
-  background: #f5f5f7 !important;
-  border-radius: 8px;
-  font-size: 20px;
-  color: #1d1d1f;
-}
-table {
-  font-size: 24px;
-}
-th {
-  background: #0071e3;
-  color: #fff;
-}
-td {
-  background: #f5f5f7;
-}
-strong {
-  color: #e3002b;
-}
-a {
-  color: #0071e3;
-}
-section.lead h1 {
-  font-size: 52px;
-  text-align: center;
-}
-section.lead p {
-  text-align: center;
-  font-size: 24px;
-  color: #86868b;
-}
-" lang="en-US" data-marpit-pagination="19" style="--paginate:true;--background-color:#ffffff;--color:#1d1d1f;--theme:default;--style:section {
-  font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
-  font-size: 28px;
-}
-h1, h2 {
-  color: #0071e3;
-}
-code {
-  background: #f5f5f7;
-  color: #d63384;
-  font-size: 22px;
-}
-pre {
-  background: #f5f5f7 !important;
-  border-radius: 8px;
-  font-size: 20px;
-  color: #1d1d1f;
-}
-table {
-  font-size: 24px;
-}
-th {
-  background: #0071e3;
-  color: #fff;
-}
-td {
-  background: #f5f5f7;
-}
-strong {
-  color: #e3002b;
-}
-a {
-  color: #0071e3;
-}
-section.lead h1 {
-  font-size: 52px;
-  text-align: center;
-}
-section.lead p {
-  text-align: center;
-  font-size: 24px;
-  color: #86868b;
-}
-;color:#1d1d1f;background-color:#ffffff;background-image:none;" data-marpit-pagination-total="21">
-<h2 id="backups-dont-leak-your-chat-transcripts">Backups: Don't Leak Your Chat Transcripts</h2>
-<p>Time Machine runs as <strong>root</strong> — it ignores all isolation and backs up everything.</p>
-<p>By default, every agent session — chat history, credentials, workspace — ends up on your backup drive. Multiple sandboxed users <strong>multiply</strong> the problem.</p>
-<p><code>iso create</code> auto-excludes each sandboxed home from Time Machine:</p>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-bash">tmutil addexclusion /Users/acm    <span class="hljs-comment"># runs automatically</span>
-</code></pre>
-<p>Your agent's work is ephemeral. <strong>Push to git, don't rely on backups.</strong></p>
-</section>
-</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="20" data-paginate="true" data-background-color="#ffffff" data-color="#1d1d1f" data-theme="default" data-style="section {
-  font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
-  font-size: 28px;
-}
-h1, h2 {
-  color: #0071e3;
-}
-code {
-  background: #f5f5f7;
-  color: #d63384;
-  font-size: 22px;
-}
-pre {
-  background: #f5f5f7 !important;
-  border-radius: 8px;
-  font-size: 20px;
-  color: #1d1d1f;
-}
-table {
-  font-size: 24px;
-}
-th {
-  background: #0071e3;
-  color: #fff;
-}
-td {
-  background: #f5f5f7;
-}
-strong {
-  color: #e3002b;
-}
-a {
-  color: #0071e3;
-}
-section.lead h1 {
-  font-size: 52px;
-  text-align: center;
-}
-section.lead p {
-  text-align: center;
-  font-size: 24px;
-  color: #86868b;
-}
-" lang="en-US" data-marpit-pagination="20" style="--paginate:true;--background-color:#ffffff;--color:#1d1d1f;--theme:default;--style:section {
-  font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
-  font-size: 28px;
-}
-h1, h2 {
-  color: #0071e3;
-}
-code {
-  background: #f5f5f7;
-  color: #d63384;
-  font-size: 22px;
-}
-pre {
-  background: #f5f5f7 !important;
-  border-radius: 8px;
-  font-size: 20px;
-  color: #1d1d1f;
-}
-table {
-  font-size: 24px;
-}
-th {
-  background: #0071e3;
-  color: #fff;
-}
-td {
-  background: #f5f5f7;
-}
-strong {
-  color: #e3002b;
-}
-a {
-  color: #0071e3;
-}
-section.lead h1 {
-  font-size: 52px;
-  text-align: center;
-}
-section.lead p {
-  text-align: center;
-  font-size: 24px;
-  color: #86868b;
-}
-;color:#1d1d1f;background-color:#ffffff;background-image:none;" data-marpit-pagination-total="21">
-<h2 id="claude-desktop--sandboxed-agent">Claude Desktop + Sandboxed Agent</h2>
-<p>Claude Desktop has built-in permissions and <code>/sandbox</code> mode — but it's <strong>self-policing</strong>.<br />
-The agent enforces its own restrictions. Isolator enforces at the <strong>OS level</strong>.</p>
-<p><strong>Best of both:</strong> run the agent sandboxed, connect from Desktop:</p>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-bash">iso acm remote          <span class="hljs-comment"># starts claude --remote as sandboxed user</span>
-                        <span class="hljs-comment"># prints connection URL → paste into Desktop</span>
-</code></pre>
-<ul>
-<li>The agent runs as <code>acm</code> — filesystem isolation, network whitelist, read-only config.</li>
-<li>You get Desktop's full UI — file preview, diffs, images, rich markdown.</li>
-<li>Each session: <strong>sandboxed</strong>, <strong>persistent</strong> (survives terminal disconnect), <strong>independent</strong>.</li>
-<li>Connect from Claude Desktop tabs. Switch between projects instantly.</li>
-</ul>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="21" data-paginate="true" data-background-color="#ffffff" data-color="#1d1d1f" data-class="lead" data-theme="default" data-style="section {
   font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;
