@@ -269,6 +269,14 @@ def copy_claude_config(name, source_user):
                 print(f"  Copying OAuth account: {claude_json_data['oauthAccount'].get('emailAddress', '?')}")
         except (json.JSONDecodeError, KeyError):
             pass
+    # Pre-trust the user's home directory
+    home_path = f"/Users/{name}"
+    claude_json_data["projects"] = {
+        home_path: {
+            "allowedTools": [],
+            "hasTrustDialogAccepted": True,
+        }
+    }
     dst_claude_json.write_text(json.dumps(claude_json_data, indent=2) + "\n")
 
     # skills symlink
