@@ -43,6 +43,7 @@ from pathlib import Path
 
 CONFIG_PATH = Path("/etc/isolator/config.toml")
 PROFILE_PATH = Path("/etc/isolator/profile")
+CLAUDE_MD_PATH = Path("/etc/isolator/CLAUDE.md")
 ANCHOR_PATH = Path("/etc/pf.anchors/isolator")
 PF_CONF = Path("/etc/pf.conf")
 BASE_UID = 600
@@ -215,6 +216,15 @@ def copy_shell_config(name, source_user, shell_type):
         if str(PROFILE_PATH) not in content:
             print(f"  Appending isolator profile to {rc_path}")
             rc_path.write_text(content + source_line)
+
+
+def copy_claude_md(name):
+    """Copy sandbox CLAUDE.md to user's home."""
+    if CLAUDE_MD_PATH.exists():
+        home = Path(f"/Users/{name}")
+        dst = home / "CLAUDE.md"
+        shutil.copy2(CLAUDE_MD_PATH, dst)
+        print(f"  Copied CLAUDE.md")
 
 
 def copy_claude_config(name, source_user):
@@ -498,7 +508,7 @@ def set_ownership(name):
     home = Path(f"/Users/{name}")
 
     for f in [".bash_profile", ".bashrc", ".zprofile", ".zshrc",
-              ".env", ".claude/settings.json",
+              ".env", "CLAUDE.md", ".claude/settings.json",
               ".claude.json", ".codex/config.toml", ".codex/AGENTS.md"]:
         path = home / f
         if path.exists():
@@ -607,6 +617,7 @@ def cmd_create(name, config, from_user=None):
 
     setup_home(name, admin)
     copy_shell_config(name, source, shell_type)
+    copy_claude_md(name)
     copy_claude_config(name, source)
     copy_codex_config(name, source)
     inject_auth(name, user_config)
