@@ -77,7 +77,7 @@ KEYCHAIN_PASS_DIR = Path("/etc/isolator/keychain")
 
 # Extra flags injected when running these commands via `iso <user> <cmd>`
 COMMAND_FLAGS = {
-    "claude": ["--dangerously-skip-permissions"],
+    "claude": ["--permission-mode", "bypassPermissions"],
 }
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
