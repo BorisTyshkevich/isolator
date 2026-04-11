@@ -219,12 +219,14 @@ def copy_shell_config(name, source_user, shell_type):
 
 
 def copy_claude_md(name):
-    """Copy sandbox CLAUDE.md to user's home."""
+    """Copy sandbox CLAUDE.md to user's ~/.claude/CLAUDE.md."""
     if CLAUDE_MD_PATH.exists():
         home = Path(f"/Users/{name}")
-        dst = home / "CLAUDE.md"
+        claude_dir = home / ".claude"
+        claude_dir.mkdir(exist_ok=True)
+        dst = claude_dir / "CLAUDE.md"
         shutil.copy2(CLAUDE_MD_PATH, dst)
-        print(f"  Copied CLAUDE.md")
+        print(f"  Copied CLAUDE.md to .claude/")
 
 
 def copy_claude_config(name, source_user):
@@ -508,7 +510,7 @@ def set_ownership(name):
     home = Path(f"/Users/{name}")
 
     for f in [".bash_profile", ".bashrc", ".zprofile", ".zshrc",
-              ".env", "CLAUDE.md", ".claude/settings.json",
+              ".env", ".claude/CLAUDE.md", ".claude/settings.json",
               ".claude.json", ".codex/config.toml", ".codex/AGENTS.md"]:
         path = home / f
         if path.exists():
