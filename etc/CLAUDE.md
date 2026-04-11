@@ -2,17 +2,20 @@
 
 You are running as an isolated macOS user. Your filesystem, network, and credentials are sandboxed.
 
-## Chrome Browser
+## Chrome Browser — CRITICAL
 
-Do NOT launch Chrome yourself. A dedicated agent Chrome is already running on `localhost:9222`.
+**NEVER launch Chrome yourself.** Do not run `open -a "Google Chrome"`, do not run the Chrome binary, do not `pkill` Chrome. You will break the admin's browser and cause zombie processes.
 
-Use the `chrome-devtools` MCP tools to interact with it:
+A dedicated agent Chrome is already running on `localhost:9222` with an empty profile. Use the `chrome-devtools` MCP tools to interact with it:
 - `list_pages` — see open tabs
-- `navigate_page` — go to a URL
+- `new_page` — open a new tab with a URL
+- `navigate_page` — go to a URL in the current tab
 - `take_screenshot` — capture the page
-- `new_page` — open a new tab
 
-If MCP returns "Target closed" — the agent Chrome is not running. Ask the user to run `iso chrome` in their terminal.
+If MCP returns "Target closed" or connection errors, tell the user:
+> "Agent Chrome is not running. Please run `iso chrome` in your terminal."
+
+Do NOT try to fix Chrome yourself.
 
 ## Docker
 
@@ -31,6 +34,7 @@ networks:
 
 ## Network
 
-Your outbound network is restricted to whitelisted hosts only. If a connection fails, the host may not be in your allowlist. Ask the user to add it to `config.toml` and run `iso pf`.
+Your outbound network is restricted to whitelisted hosts only. If a connection fails, the host may not be in your allowlist. Tell the user:
+> "Connection to <host> failed. It may need to be added to config.toml. Run `iso pf` after adding it."
 
 Localhost is always allowed — local services (Docker, Chrome DevTools, MCP servers) work without restriction.
