@@ -335,8 +335,10 @@ iso chrome --stop                # stop when done
 **2. Add Chrome DevTools MCP to your admin config:**
 
 ```bash
-claude mcp add chrome-devtools --scope user npx chrome-devtools-mcp@latest
+claude mcp add chrome-devtools --scope user -- npx chrome-devtools-mcp@latest --browserUrl http://127.0.0.1:9222
 ```
+
+**Important:** `--browserUrl` is required — without it the MCP server tries to launch its own Chrome, which fails for sandboxed users. This is Google's official [chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp).
 
 **3. Copy to sandboxed users:**
 
