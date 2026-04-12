@@ -221,7 +221,8 @@ hosts = ["api.anthropic.com"]
   .claude/settings.json             your settings 
   .local/bin/                       pip installs
   .npm-global/                      npm installs
-  workspace/                        working directory
+
+/Users/Workspaces/                  shared project directories
 ```
 
 Shared tools (read-only):
@@ -245,7 +246,7 @@ iso acm claude                    # Claude on ACM project
 iso click codex                   # Codex on ClickHouse
 
 # Read their work from your account
-cat /Users/acm/workspace/main.py
+cat /Users/Workspaces/acm-project/main.py
 
 # Refresh config after changes
 iso create acm                    # re-copies shell/claude config

@@ -1242,7 +1242,8 @@ section.lead p {
   .claude/settings.json             your settings 
   .local/bin/                       pip installs
   .npm-global/                      npm installs
-  workspace/                        working directory
+
+/Users/Workspaces/                  shared project directories
 </code></pre>
 <p>Shared tools (read-only):</p>
 <pre is="marp-pre" data-auto-scaling="downscale-only"><code>/opt/homebrew/bin/                  brew packages
@@ -1347,7 +1348,7 @@ iso acm claude                    <span class="hljs-comment"># Claude on ACM pro
 iso click codex                   <span class="hljs-comment"># Codex on ClickHouse</span>
 
 <span class="hljs-comment"># Read their work from your account</span>
-<span class="hljs-built_in">cat</span> /Users/acm/workspace/main.py
+<span class="hljs-built_in">cat</span> /Users/Workspaces/acm-project/main.py
 
 <span class="hljs-comment"># Refresh config after changes</span>
 iso create acm                    <span class="hljs-comment"># re-copies shell/claude config</span>

@@ -52,6 +52,7 @@ NETSHOOT_IMAGE = "nicolaka/netshoot"
 SSH_KEY_NAME = "isolator"  # ~/.ssh/isolator (single key for all sandbox users)
 SSH_OPTS = ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
             "-o", "LogLevel=ERROR"]
+WORKSPACES_DIR = Path("/Users/Workspaces")
 
 SHELL_RC_FILES = {
     "bash": [".bash_profile", ".bashrc"],
@@ -513,8 +514,11 @@ def inject_auth(name, user_config):
 
 def create_skeleton(name):
     home = Path(f"/Users/{name}")
-    for d in [".local/bin", ".local/lib", ".npm-global", ".cache", "workspace"]:
+    for d in [".local/bin", ".local/lib", ".npm-global", ".cache"]:
         (home / d).mkdir(parents=True, exist_ok=True)
+    # Shared workspaces directory
+    WORKSPACES_DIR.mkdir(mode=0o775, exist_ok=True)
+    run(["chown", "root:staff", str(WORKSPACES_DIR)], check=False)
 
 
 def set_ownership(name):
@@ -896,27 +900,36 @@ def unlock_user_keychain(user):
                 capture_output=True)
 
 
-def build_ssh_cmd(user, command, extra, args):
+def build_ssh_cmd(user, command, extra, args, cwd=None):
     """Build SSH command to run as sandboxed user."""
     admin = os.environ.get("USER", "bvt")
     priv_key = ssh_key_path(admin)
+    if cwd:
+        remote = f"cd {cwd} && exec {command} " + " ".join(extra + args)
+    else:
+        remote = command + " " + " ".join(extra + args)
     return ["ssh", "-t", "-i", str(priv_key)] + SSH_OPTS + [
-        f"{user}@127.0.0.1", command] + extra + args
+        f"{user}@127.0.0.1", remote]
 
 
 def cmd_run(user, command, args):
     """Run a command as an isolated user via SSH (fallback: sudo)."""
     unlock_user_keychain(user)
     extra = COMMAND_FLAGS.get(command, [])
+    cwd = str(WORKSPACES_DIR) if WORKSPACES_DIR.exists() else None
 
     admin = os.environ.get("USER", "bvt")
     priv_key = ssh_key_path(admin)
     if priv_key.exists():
         # SSH mode: proper login session
-        os.execvp("ssh", build_ssh_cmd(user, command, extra, args))
+        os.execvp("ssh", build_ssh_cmd(user, command, extra, args, cwd))
     else:
         # Fallback: sudo mode
-        os.execvp("sudo", ["sudo", "-u", user, "-i", command] + extra + args)
+        if cwd:
+            shell_cmd = f"cd {cwd} && exec {command} " + " ".join(extra + args)
+            os.execvp("sudo", ["sudo", "-u", user, "-i", "bash", "-c", shell_cmd])
+        else:
+            os.execvp("sudo", ["sudo", "-u", user, "-i", command] + extra + args)
 
 
 # ── Remote command ──────────────────────────────────────────────────────────
@@ -962,8 +975,10 @@ def cmd_remote(user, args):
     admin = os.environ.get("USER", "bvt")
     priv_key = ssh_key_path(admin)
     if priv_key.exists():
+        cwd = str(WORKSPACES_DIR) if WORKSPACES_DIR.exists() else None
         remote_cmd = build_ssh_cmd(user, "claude",
-                                   ["--remote", "--permission-mode", "bypassPermissions"], [])
+                                   ["--remote", "--permission-mode", "bypassPermissions"], [],
+                                   cwd)
     else:
         remote_cmd = ["sudo", "-u", user, "-i",
                       "claude", "--remote", "--permission-mode", "bypassPermissions"]

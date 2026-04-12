@@ -316,6 +316,27 @@ From the source user (admin or `--from`):
 
 What does NOT get copied: `~/.env`, `~/.ssh`, `~/.aws`, `~/.kube`, session histories, debug caches, sqlite DBs, per-project configs.
 
+## Workspaces
+
+All projects live in `/Users/Workspaces/`:
+
+```bash
+/Users/Workspaces/
+  acm-project/          # ACM project
+  clickhouse/           # ClickHouse source
+  my-experiment/        # any project
+```
+
+`iso acm claude` starts in `/Users/Workspaces/` by default. Create project dirs as admin:
+
+```bash
+mkdir /Users/Workspaces/my-project
+# or clone directly:
+iso acm git clone https://github.com/... /Users/Workspaces/my-project
+```
+
+Workspaces are **not deleted** by `iso delete` — your project code survives user recreation.
+
 ## Shared tools
 
 Install tools as admin — all users can use them:

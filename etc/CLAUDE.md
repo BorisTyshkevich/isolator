@@ -2,6 +2,10 @@
 
 You are running as an isolated macOS user. Your filesystem, network, and credentials are sandboxed.
 
+## Workspaces
+
+Project directories are in `/Users/Workspaces/`. You start here by default. Each project has its own subdirectory.
+
 ## Chrome Browser — CRITICAL
 
 **NEVER launch Chrome yourself.** Do not run `open -a "Google Chrome"`, do not run the Chrome binary, do not `pkill` Chrome. You will break the admin's browser and cause zombie processes.
