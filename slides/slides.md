@@ -345,8 +345,6 @@ By default, every agent session — chat history, credentials, workspace — end
 tmutil addexclusion /Users/acm    # runs automatically
 ```
 
-Your agent's work is ephemeral. **Push to git, don't rely on backups.**
-
 ---
 
 ## Claude Desktop + Sandboxed Agent
