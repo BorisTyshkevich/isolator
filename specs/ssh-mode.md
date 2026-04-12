@@ -37,63 +37,69 @@ sudo dscl . -append /Groups/com.apple.access_ssh GroupMembership <username>
 ```
 Without this, macOS PAM denies SSH login ("failed service ACL check").
 
-### 2. Key generation during `iso create`
+### 2. Single keypair for all sandbox users
 
+One Ed25519 keypair for the admin. Public key installed to every sandbox user on `iso create`.
+
+```
+~/.ssh/isolator              ← private key (admin, generated once)
+~/.ssh/isolator.pub          ← public key
+/Users/acm/.ssh/authorized_keys    ← same public key
+/Users/click/.ssh/authorized_keys  ← same public key
+/Users/otel/.ssh/authorized_keys   ← same public key
+```
+
+Generate once (first `iso create`):
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/isolator -N "" -q -C "isolator@$(hostname -s)"
+```
+
+Install on each `iso create`:
 ```python
 def setup_ssh_key(name, admin):
-    """Generate Ed25519 keypair for passwordless SSH to sandboxed user."""
+    """Install admin's isolator public key for passwordless SSH."""
     admin_home = Path(f"/Users/{admin}")
     user_home = Path(f"/Users/{name}")
     
-    # Admin side: private key
-    ssh_dir = admin_home / ".ssh"
-    priv_key = ssh_dir / f"isolator-{name}"
+    priv_key = admin_home / ".ssh" / "isolator"
     
+    # Generate keypair if it doesn't exist yet
     if not priv_key.exists():
         run(["ssh-keygen", "-t", "ed25519", "-f", str(priv_key),
-             "-N", "", "-q", "-C", f"isolator-{name}@{socket.gethostname()}"])
+             "-N", "", "-q", "-C", f"isolator@{socket.gethostname()}"])
         run(["chmod", "600", str(priv_key)])
     
     pub_key = priv_key.with_suffix(".pub").read_text().strip()
     
-    # Sandbox side: authorized_keys
+    # Install public key in sandbox user's authorized_keys
     user_ssh = user_home / ".ssh"
     user_ssh.mkdir(exist_ok=True)
     auth_keys = user_ssh / "authorized_keys"
-    
-    # Append if not already present
-    existing = auth_keys.read_text() if auth_keys.exists() else ""
-    if pub_key not in existing:
-        auth_keys.write_text(existing + pub_key + "\n")
+    auth_keys.write_text(pub_key + "\n")
     
     run(["chown", "-R", f"{name}:staff", str(user_ssh)])
     run(["chmod", "700", str(user_ssh)])
     run(["chmod", "600", str(auth_keys)])
+    
+    # Add to SSH service ACL group
+    run(["dscl", ".", "-append", "/Groups/com.apple.access_ssh",
+         "GroupMembership", name], check=False)
 ```
 
-### 3. SSH config entry
+To revoke access for one user: remove their `authorized_keys` or remove from `com.apple.access_ssh`.
 
-Add to admin's `~/.ssh/config`:
-
-```
-Host iso-acm
-    HostName 127.0.0.1
-    User acm
-    IdentityFile ~/.ssh/isolator-acm
-    StrictHostKeyChecking no
-    UserKnownHostsFile /dev/null
-    LogLevel ERROR
-```
-
-### 4. cmd_run via SSH
+### 3. cmd_run via SSH
 
 ```python
 def cmd_run(user, command, args):
     extra = COMMAND_FLAGS.get(command, [])
     admin = os.environ.get("USER", "bvt")
-    priv_key = Path(f"/Users/{admin}/.ssh/isolator-{user}")
+    priv_key = Path(f"/Users/{admin}/.ssh/isolator")
     
     if priv_key.exists():
+        # Unlock keychain via sudo (needs root to read password file)
+        unlock_keychain(user)
+        
         # SSH mode: proper login session
         ssh_cmd = ["ssh", "-t",
                    "-i", str(priv_key),
@@ -105,47 +111,11 @@ def cmd_run(user, command, args):
         os.execvp("ssh", ssh_cmd)
     else:
         # Fallback: sudo mode
+        unlock_keychain(user)
         os.execvp("sudo", ["sudo", "-u", user, "-i", command] + extra + args)
 ```
 
-### 5. Keychain unlock via SSH
-
-Two options:
-
-**A. SSH keychain integration (automatic)**
-macOS SSH login can trigger keychain unlock if the user has a password set.
-But our sandboxed users have no password — so this won't work directly.
-
-**B. Unlock via SSH remote command (before session)**
-```python
-# Before launching the interactive session, unlock keychain
-kc_pass = read_keychain_pass(user)
-if kc_pass:
-    subprocess.run(
-        ["ssh", "-i", str(priv_key), "-o", "...",
-         f"{user}@127.0.0.1",
-         f"security unlock-keychain -p '{kc_pass}' ~/Library/Keychains/login.keychain-db"],
-        capture_output=True)
-```
-
-Wait — the keychain password is in `/etc/isolator/keychain/<user>` (root-only). SSH can't read it. Options:
-- Read it before SSH (we're still admin/root at that point)
-- Pass it via SSH environment variable (needs `AcceptEnv` in sshd_config)
-- Write a temp file, SSH reads it, delete it (race condition)
-- Use `sudo` just for the keychain unlock, SSH for everything else
-
-**Recommended: hybrid** — use sudo to unlock keychain (one quick command), then SSH for the session:
-
-```python
-def cmd_run(user, command, args):
-    # Unlock keychain via sudo (needs root to read password file)
-    unlock_keychain(user)
-    
-    # SSH for the actual session
-    extra = COMMAND_FLAGS.get(command, [])
-    ssh_cmd = ["ssh", "-t", "-i", str(priv_key), ...]
-    os.execvp("ssh", ssh_cmd)
-```
+Keychain unlock still uses sudo (reads root-only password file), then SSH for the session.
 
 ## Comparison
 
