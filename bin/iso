@@ -13,7 +13,7 @@ Usage:
     iso <user> remote [--bg]          Start sandboxed remote session for Claude Desktop
     iso <user> remote --status        Show remote session status
     iso <user> remote --stop          Stop remote session
-    iso chrome                        Start agent Chrome (empty profile, port 9222)
+    iso chrome [--port PORT]          Start agent Chrome (empty profile, default 9222)
     iso chrome --stop                 Stop agent Chrome
 
 Options for create:
@@ -999,6 +999,13 @@ CHROME_DEBUG_PORT = 9222
 
 def cmd_chrome(args):
     """Start or stop a dedicated agent Chrome (empty profile, debug port)."""
+    # Parse --port
+    port = CHROME_DEBUG_PORT
+    if "--port" in args:
+        idx = args.index("--port")
+        port = int(args[idx + 1])
+        args = args[:idx] + args[idx + 2:]
+
     if "--stop" in args:
         if not CHROME_PID_FILE.exists():
             print("No agent Chrome running")
@@ -1010,22 +1017,22 @@ def cmd_chrome(args):
         return
 
     # Check if already running
-    r = subprocess.run(["curl", "-s", f"http://127.0.0.1:{CHROME_DEBUG_PORT}/json/version"],
+    r = subprocess.run(["curl", "-s", f"http://127.0.0.1:{port}/json/version"],
                        capture_output=True, text=True)
     if r.returncode == 0 and "Chrome" in r.stdout:
-        print(f"Agent Chrome already running on port {CHROME_DEBUG_PORT}")
+        print(f"Agent Chrome already running on port {port}")
         return
 
     proc = subprocess.Popen(
         [CHROME_APP,
          f"--user-data-dir={CHROME_AGENT_DIR}",
-         f"--remote-debugging-port={CHROME_DEBUG_PORT}",
+         f"--remote-debugging-port={port}",
          "--no-first-run"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     CHROME_PID_FILE.write_text(str(proc.pid))
-    print(f"Started agent Chrome (pid {proc.pid}, port {CHROME_DEBUG_PORT})")
+    print(f"Started agent Chrome (pid {proc.pid}, port {port})")
     print(f"  Empty profile: {CHROME_AGENT_DIR}")
-    print(f"  DevTools: http://127.0.0.1:{CHROME_DEBUG_PORT}")
+    print(f"  DevTools: http://127.0.0.1:{port}")
 
 
 # ── List command ────────────────────────────────────────────────────────────
