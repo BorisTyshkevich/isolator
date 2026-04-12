@@ -36,6 +36,8 @@ def is_path_allowed(path, user):
         return True
     if resolved == "/tmp" or resolved.startswith("/tmp/"):
         return True
+    if resolved == "/private/tmp" or resolved.startswith("/private/tmp/"):
+        return True
     return False
 
 
