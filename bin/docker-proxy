@@ -1,0 +1,295 @@
+#!/usr/bin/env python3
+"""docker-proxy: Per-user Docker socket proxy that restricts volume mounts.
+
+Inspects EVERY HTTP request on keep-alive connections.
+Blocks container creation with bind mounts outside the user's workspace.
+"""
+
+import argparse
+import json
+import os
+import signal
+import socket
+import sys
+import threading
+from pathlib import Path
+
+WORKSPACES_DIR = "/Users/Workspaces"
+
+
+def log(user, msg):
+    print(f"[{user}] {msg}", flush=True)
+
+
+def resolve_path(path):
+    try:
+        return str(Path(path).resolve())
+    except (OSError, ValueError):
+        return path
+
+
+def is_path_allowed(path, user):
+    resolved = resolve_path(path)
+    user_ws = f"{WORKSPACES_DIR}/{user}"
+    if resolved == user_ws or resolved.startswith(user_ws + "/"):
+        return True
+    if resolved == "/tmp" or resolved.startswith("/tmp/"):
+        return True
+    return False
+
+
+def check_create_request(body_bytes, user):
+    try:
+        data = json.loads(body_bytes)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return False, "invalid JSON body"
+
+    hc = data.get("HostConfig") or {}
+
+    if hc.get("Privileged"):
+        return False, "privileged containers are not allowed"
+    if hc.get("NetworkMode") == "host":
+        return False, "--net=host is not allowed"
+    if hc.get("PidMode") == "host":
+        return False, "--pid=host is not allowed"
+    if hc.get("VolumesFrom"):
+        return False, "--volumes-from is not allowed"
+    if hc.get("Devices"):
+        return False, "--device mounts are not allowed"
+
+    for bind in hc.get("Binds") or []:
+        source = bind.split(":")[0]
+        if not source.startswith("/"):
+            continue
+        if not is_path_allowed(source, user):
+            return False, f"bind mount not allowed: {source}"
+        if "docker.sock" in resolve_path(source):
+            return False, "mounting Docker socket is not allowed"
+
+    for mount in hc.get("Mounts") or []:
+        if mount.get("Type") == "bind":
+            source = mount.get("Source", "")
+            if not is_path_allowed(source, user):
+                return False, f"mount not allowed: {source}"
+
+    return True, ""
+
+
+def recv_until(sock, delimiter):
+    """Receive until delimiter is found. Returns accumulated bytes."""
+    buf = b""
+    while delimiter not in buf:
+        chunk = sock.recv(8192)
+        if not chunk:
+            return buf
+        buf += chunk
+    return buf
+
+
+def recv_exactly(sock, n):
+    """Receive exactly n bytes."""
+    buf = b""
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            return buf
+        buf += chunk
+    return buf
+
+
+def relay_stream(src, dst):
+    """Relay bytes until connection closes."""
+    try:
+        while True:
+            data = src.recv(65536)
+            if not data:
+                break
+            dst.sendall(data)
+    except (BrokenPipeError, ConnectionResetError, OSError):
+        pass
+    try:
+        dst.shutdown(socket.SHUT_WR)
+    except OSError:
+        pass
+
+
+def handle_connection(client, upstream_path, user):
+    """Handle a keep-alive HTTP connection: inspect every request."""
+    upstream = None
+    try:
+        upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        upstream.connect(upstream_path)
+
+        # We need to intercept each request on this connection.
+        # Strategy: read from client, parse each HTTP request,
+        # check if it's a create, then forward or block.
+        # For non-create and for streaming (attach), switch to raw relay.
+
+        leftover = b""
+        while True:
+            # Read until we have HTTP headers
+            buf = leftover
+            leftover = b""
+            while b"\r\n\r\n" not in buf:
+                chunk = client.recv(8192)
+                if not chunk:
+                    return  # client disconnected
+                buf += chunk
+
+            hdr_end = buf.index(b"\r\n\r\n") + 4
+            hdr = buf[:hdr_end].decode("utf-8", errors="replace")
+            after_hdr = buf[hdr_end:]
+
+            first_line = hdr.split("\r\n")[0]
+            parts = first_line.split(" ", 2)
+            method = parts[0] if parts else ""
+            path = parts[1] if len(parts) > 1 else ""
+
+            log(user, f"{method} {path}")
+
+            # Parse content-length
+            content_length = 0
+            for line in hdr.split("\r\n"):
+                if line.lower().startswith("content-length:"):
+                    content_length = int(line.split(":", 1)[1].strip())
+
+            # Read full body
+            body = after_hdr[:content_length]
+            remaining_after_body = after_hdr[content_length:]
+            while len(body) < content_length:
+                chunk = client.recv(65536)
+                if not chunk:
+                    return
+                needed = content_length - len(body)
+                body += chunk[:needed]
+                if len(chunk) > needed:
+                    remaining_after_body += chunk[needed:]
+
+            leftover = remaining_after_body
+
+            # Check create requests
+            if method == "POST" and "/containers/create" in path:
+                ok, reason = check_create_request(body, user)
+                if not ok:
+                    err = json.dumps({"message": f"isolator: {reason}"})
+                    resp = (
+                        f"HTTP/1.1 403 Forbidden\r\n"
+                        f"Content-Type: application/json\r\n"
+                        f"Content-Length: {len(err)}\r\n"
+                        f"Connection: close\r\n"
+                        f"\r\n{err}"
+                    ).encode()
+                    client.sendall(resp)
+                    log(user, f"BLOCKED: {reason}")
+                    return
+
+            # Forward this request to upstream
+            full_request = buf[:hdr_end] + body
+            upstream.sendall(full_request)
+
+            # For attach/exec (streaming), switch to raw bidirectional relay
+            # These endpoints upgrade to raw stream — no more HTTP framing
+            if "/attach" in path or "/exec" in path:
+                # Send any leftover first
+                if leftover:
+                    upstream.sendall(leftover)
+                # Switch to raw relay
+                t = threading.Thread(target=relay_stream, args=(upstream, client), daemon=True)
+                t.start()
+                relay_stream(client, upstream)
+                t.join(timeout=5)
+                return
+
+            # For normal HTTP requests: read the response and forward it
+            # Read response headers
+            resp_buf = b""
+            while b"\r\n\r\n" not in resp_buf:
+                chunk = upstream.recv(8192)
+                if not chunk:
+                    return
+                resp_buf += chunk
+
+            resp_hdr_end = resp_buf.index(b"\r\n\r\n") + 4
+            resp_hdr = resp_buf[:resp_hdr_end].decode("utf-8", errors="replace")
+            resp_after = resp_buf[resp_hdr_end:]
+
+            # Parse response content-length
+            resp_cl = 0
+            chunked_resp = False
+            for line in resp_hdr.split("\r\n"):
+                if line.lower().startswith("content-length:"):
+                    resp_cl = int(line.split(":", 1)[1].strip())
+                if line.lower().startswith("transfer-encoding:") and "chunked" in line.lower():
+                    chunked_resp = True
+
+            if chunked_resp:
+                # Read until final chunk (0\r\n\r\n)
+                resp_body = resp_after
+                while not resp_body.endswith(b"0\r\n\r\n"):
+                    chunk = upstream.recv(65536)
+                    if not chunk:
+                        break
+                    resp_body += chunk
+                client.sendall(resp_buf[:resp_hdr_end] + resp_body)
+            elif resp_cl > 0:
+                resp_body = resp_after
+                while len(resp_body) < resp_cl:
+                    chunk = upstream.recv(65536)
+                    if not chunk:
+                        break
+                    resp_body += chunk
+                client.sendall(resp_buf[:resp_hdr_end] + resp_body)
+            else:
+                # No body or unknown length
+                client.sendall(resp_buf)
+
+    except Exception as e:
+        log(user, f"ERROR: {e}")
+    finally:
+        client.close()
+        if upstream:
+            upstream.close()
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--user", required=True)
+    parser.add_argument("--socket", required=True)
+    parser.add_argument("--upstream", default="/var/run/docker.sock")
+    args = parser.parse_args()
+
+    if os.path.exists(args.socket):
+        os.unlink(args.socket)
+
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(args.socket)
+    os.chmod(args.socket, 0o770)
+    os.system(f"chown {args.user}:staff {args.socket}")
+    server.listen(32)
+
+    log(args.user, f"proxy: {args.socket} → {args.upstream}")
+
+    def shutdown(sig, frame):
+        server.close()
+        try:
+            os.unlink(args.socket)
+        except OSError:
+            pass
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, shutdown)
+
+    while True:
+        try:
+            client, _ = server.accept()
+            t = threading.Thread(target=handle_connection,
+                                 args=(client, args.upstream, args.user),
+                                 daemon=True)
+            t.start()
+        except OSError:
+            break
+
+
+if __name__ == "__main__":
+    main()
