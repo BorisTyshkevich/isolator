@@ -53,6 +53,8 @@ SSH_KEY_NAME = "isolator"  # ~/.ssh/isolator (single key for all sandbox users)
 SSH_OPTS = ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
             "-o", "LogLevel=ERROR"]
 WORKSPACES_DIR = Path("/Users/Workspaces")
+DOCKER_PROXY_DIR = Path("/tmp/isolator-docker")
+DOCKER_PROXY_SCRIPT = Path(__file__).parent / "docker-proxy"
 
 SHELL_RC_FILES = {
     "bash": [".bash_profile", ".bashrc"],
@@ -894,6 +896,36 @@ def cmd_pf(config, dry_run=False):
 
 # ── Run command ─────────────────────────────────────────────────────────────
 
+def ensure_docker_proxy(user):
+    """Start per-user Docker proxy if not already running."""
+    DOCKER_PROXY_DIR.mkdir(mode=0o755, exist_ok=True)
+    sock = DOCKER_PROXY_DIR / f"{user}.sock"
+    pid_file = DOCKER_PROXY_DIR / f"{user}.pid"
+
+    # Check if already running
+    if pid_file.exists():
+        pid = int(pid_file.read_text().strip())
+        try:
+            os.kill(pid, 0)  # check if alive
+            return  # already running
+        except ProcessLookupError:
+            pid_file.unlink(missing_ok=True)
+
+    # Find upstream Docker socket
+    admin = os.environ.get("USER", "bvt")
+    upstream = Path(f"/Users/{admin}/.orbstack/run/docker.sock")
+    if not upstream.exists():
+        upstream = Path("/var/run/docker.sock")
+    if not upstream.exists():
+        return  # no Docker
+
+    proc = subprocess.Popen(
+        [sys.executable, str(DOCKER_PROXY_SCRIPT),
+         "--user", user, "--socket", str(sock), "--upstream", str(upstream)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    pid_file.write_text(str(proc.pid))
+
+
 def unlock_user_keychain(user):
     """Unlock a user's keychain via sudo (reads root-only password file)."""
     kc_file = Path(f"/Users/{user}/Library/Keychains/{KEYCHAIN_NAME}")
@@ -923,6 +955,7 @@ def build_ssh_cmd(user, command, extra, args, cwd=None):
 def cmd_run(user, command, args):
     """Run a command as an isolated user via SSH (fallback: sudo)."""
     unlock_user_keychain(user)
+    ensure_docker_proxy(user)
     extra = COMMAND_FLAGS.get(command, [])
     user_ws = WORKSPACES_DIR / user
     cwd = str(user_ws) if user_ws.exists() else None

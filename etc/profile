@@ -19,7 +19,15 @@ export NPM_CONFIG_ignore_scripts=true
 export PIP_USER=1
 export PYTHONUSERBASE="$HOME/.local"
 
-# Docker — per-user isolated network
+# Docker — per-user proxy socket (restricts volume mounts)
+DOCKER_PROXY_SOCK="/tmp/isolator-docker/$(whoami).sock"
+if [[ -S "$DOCKER_PROXY_SOCK" ]]; then
+    export DOCKER_HOST="unix://$DOCKER_PROXY_SOCK"
+fi
+# Clean docker config — no OrbStack context
+mkdir -p "$HOME/.docker" 2>/dev/null
+[[ ! -f "$HOME/.docker/config.json" ]] && echo '{}' > "$HOME/.docker/config.json" 2>/dev/null
+export DOCKER_CONFIG="$HOME/.docker"
 export DOCKER_NETWORK="iso-$(whoami)"
 
 

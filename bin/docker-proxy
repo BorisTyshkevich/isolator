@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """docker-proxy: Per-user Docker socket proxy that restricts volume mounts.
 
-Inspects EVERY HTTP request on keep-alive connections.
-Blocks container creation with bind mounts outside the user's workspace.
+Inspects every HTTP request on keep-alive connections.
+Only inspects container create — all other requests pass through.
+After the first streaming endpoint (attach/wait/exec), switches to raw relay.
 """
 
 import argparse
@@ -38,7 +39,7 @@ def is_path_allowed(path, user):
     return False
 
 
-def check_create_request(body_bytes, user):
+def check_create(body_bytes, user):
     try:
         data = json.loads(body_bytes)
     except (json.JSONDecodeError, UnicodeDecodeError):
@@ -75,30 +76,7 @@ def check_create_request(body_bytes, user):
     return True, ""
 
 
-def recv_until(sock, delimiter):
-    """Receive until delimiter is found. Returns accumulated bytes."""
-    buf = b""
-    while delimiter not in buf:
-        chunk = sock.recv(8192)
-        if not chunk:
-            return buf
-        buf += chunk
-    return buf
-
-
-def recv_exactly(sock, n):
-    """Receive exactly n bytes."""
-    buf = b""
-    while len(buf) < n:
-        chunk = sock.recv(n - len(buf))
-        if not chunk:
-            return buf
-        buf += chunk
-    return buf
-
-
-def relay_stream(src, dst):
-    """Relay bytes until connection closes."""
+def relay(src, dst):
     try:
         while True:
             data = src.recv(65536)
@@ -113,39 +91,30 @@ def relay_stream(src, dst):
         pass
 
 
-def handle_connection(client, upstream_path, user):
-    """Handle a keep-alive HTTP connection: inspect every request."""
+def handle(client, upstream_path, user):
     upstream = None
     try:
         upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         upstream.connect(upstream_path)
 
-        # We need to intercept each request on this connection.
-        # Strategy: read from client, parse each HTTP request,
-        # check if it's a create, then forward or block.
-        # For non-create and for streaming (attach), switch to raw relay.
-
         leftover = b""
         while True:
-            # Read until we have HTTP headers
+            # Read next HTTP request headers
             buf = leftover
             leftover = b""
             while b"\r\n\r\n" not in buf:
                 chunk = client.recv(8192)
                 if not chunk:
-                    return  # client disconnected
+                    return
                 buf += chunk
 
             hdr_end = buf.index(b"\r\n\r\n") + 4
             hdr = buf[:hdr_end].decode("utf-8", errors="replace")
             after_hdr = buf[hdr_end:]
 
-            first_line = hdr.split("\r\n")[0]
-            parts = first_line.split(" ", 2)
+            parts = hdr.split("\r\n")[0].split(" ", 2)
             method = parts[0] if parts else ""
             path = parts[1] if len(parts) > 1 else ""
-
-            log(user, f"{method} {path}")
 
             # Parse content-length
             content_length = 0
@@ -153,9 +122,9 @@ def handle_connection(client, upstream_path, user):
                 if line.lower().startswith("content-length:"):
                     content_length = int(line.split(":", 1)[1].strip())
 
-            # Read full body
+            # Read body
             body = after_hdr[:content_length]
-            remaining_after_body = after_hdr[content_length:]
+            leftover = after_hdr[content_length:]
             while len(body) < content_length:
                 chunk = client.recv(65536)
                 if not chunk:
@@ -163,13 +132,11 @@ def handle_connection(client, upstream_path, user):
                 needed = content_length - len(body)
                 body += chunk[:needed]
                 if len(chunk) > needed:
-                    remaining_after_body += chunk[needed:]
+                    leftover += chunk[needed:]
 
-            leftover = remaining_after_body
-
-            # Check create requests
+            # Inspect container create
             if method == "POST" and "/containers/create" in path:
-                ok, reason = check_create_request(body, user)
+                ok, reason = check_create(body, user)
                 if not ok:
                     err = json.dumps({"message": f"isolator: {reason}"})
                     resp = (
@@ -183,24 +150,23 @@ def handle_connection(client, upstream_path, user):
                     log(user, f"BLOCKED: {reason}")
                     return
 
-            # Forward this request to upstream
-            full_request = buf[:hdr_end] + body
-            upstream.sendall(full_request)
+            # Forward request to upstream
+            upstream.sendall(buf[:hdr_end] + body)
 
-            # For attach/exec (streaming), switch to raw bidirectional relay
-            # These endpoints upgrade to raw stream — no more HTTP framing
-            if "/attach" in path or "/exec" in path:
-                # Send any leftover first
+            # For streaming endpoints: switch to raw bidirectional relay
+            # and stop parsing HTTP — these don't return until done
+            if any(s in path for s in ["/attach", "/exec", "/wait", "/logs"]):
                 if leftover:
                     upstream.sendall(leftover)
-                # Switch to raw relay
-                t = threading.Thread(target=relay_stream, args=(upstream, client), daemon=True)
+                t = threading.Thread(target=relay, args=(upstream, client), daemon=True)
                 t.start()
-                relay_stream(client, upstream)
+                relay(client, upstream)
                 t.join(timeout=5)
                 return
 
-            # For normal HTTP requests: read the response and forward it
+            # For normal request/response: read response and forward
+            # Use raw relay for the response to avoid parsing issues
+            # But we need to know when the response ends to continue the loop
             # Read response headers
             resp_buf = b""
             while b"\r\n\r\n" not in resp_buf:
@@ -213,34 +179,33 @@ def handle_connection(client, upstream_path, user):
             resp_hdr = resp_buf[:resp_hdr_end].decode("utf-8", errors="replace")
             resp_after = resp_buf[resp_hdr_end:]
 
-            # Parse response content-length
             resp_cl = 0
-            chunked_resp = False
+            chunked = False
             for line in resp_hdr.split("\r\n"):
-                if line.lower().startswith("content-length:"):
+                low = line.lower()
+                if low.startswith("content-length:"):
                     resp_cl = int(line.split(":", 1)[1].strip())
-                if line.lower().startswith("transfer-encoding:") and "chunked" in line.lower():
-                    chunked_resp = True
+                if low.startswith("transfer-encoding:") and "chunked" in low:
+                    chunked = True
 
-            if chunked_resp:
-                # Read until final chunk (0\r\n\r\n)
-                resp_body = resp_after
-                while not resp_body.endswith(b"0\r\n\r\n"):
+            if chunked:
+                body_buf = resp_after
+                while not body_buf.endswith(b"0\r\n\r\n"):
                     chunk = upstream.recv(65536)
                     if not chunk:
                         break
-                    resp_body += chunk
-                client.sendall(resp_buf[:resp_hdr_end] + resp_body)
+                    body_buf += chunk
+                client.sendall(resp_buf[:resp_hdr_end] + body_buf)
             elif resp_cl > 0:
-                resp_body = resp_after
-                while len(resp_body) < resp_cl:
+                body_buf = resp_after
+                while len(body_buf) < resp_cl:
                     chunk = upstream.recv(65536)
                     if not chunk:
                         break
-                    resp_body += chunk
-                client.sendall(resp_buf[:resp_hdr_end] + resp_body)
+                    body_buf += chunk
+                leftover = body_buf[resp_cl:]
+                client.sendall(resp_buf[:resp_hdr_end] + body_buf[:resp_cl])
             else:
-                # No body or unknown length
                 client.sendall(resp_buf)
 
     except Exception as e:
@@ -263,8 +228,7 @@ def main():
 
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(args.socket)
-    os.chmod(args.socket, 0o770)
-    os.system(f"chown {args.user}:staff {args.socket}")
+    os.chmod(args.socket, 0o777)
     server.listen(32)
 
     log(args.user, f"proxy: {args.socket} → {args.upstream}")
@@ -283,7 +247,7 @@ def main():
     while True:
         try:
             client, _ = server.accept()
-            t = threading.Thread(target=handle_connection,
+            t = threading.Thread(target=handle,
                                  args=(client, args.upstream, args.user),
                                  daemon=True)
             t.start()

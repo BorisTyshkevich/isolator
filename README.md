@@ -344,19 +344,37 @@ Users read `/opt/homebrew` and `/usr/local` but can't write. Upgrade a tool once
 
 ## Docker (OrbStack)
 
-OrbStack's docker socket lives inside the admin's home (`~/.orbstack/run/docker.sock`). The default `/var/run/docker.sock` is a symlink there — isolated users can't traverse `~/`. Isolator replaces the symlink with a hardlink, keeping the standard path accessible to everyone.
+### Socket access
+
+OrbStack's socket lives inside the admin's home — sandboxed users can't reach it. A launchd daemon creates a hardlink at `/var/run/docker.sock`:
 
 ```bash
-# Install (one-time)
 sudo cp etc/com.isolator.docker-proxy.plist /Library/LaunchDaemons/
 sudo launchctl load /Library/LaunchDaemons/com.isolator.docker-proxy.plist
 ```
 
-The launchd job watches `/var/run/docker.sock` — when OrbStack recreates the symlink (after restart), it replaces it with a hardlink. No `DOCKER_HOST` needed, no proxy, containers and testcontainers work with default paths.
+### Volume mount protection
+
+**The problem:** Docker socket = root-level filesystem access. A sandboxed agent can `docker run -v /Users/admin/.ssh:/mnt` and read all your credentials.
+
+**The fix:** per-user Docker socket proxy. Each sandboxed user gets a filtered socket that blocks dangerous mounts:
+
+```
+agent → /tmp/isolator-docker/acm.sock → proxy → Docker daemon
+```
+
+The proxy inspects every `containers/create` API call and blocks:
+- Bind mounts outside `/Users/Workspaces/<user>/` and `/tmp/`
+- `--privileged`, `--net=host`, `--pid=host`
+- `--volumes-from`, `--device`
+- Mounting the Docker socket into containers
+
+The proxy runs as admin (no sudo), auto-started by `iso` on first use. Sandboxed users must use `/opt/homebrew/bin/docker` (not the OrbStack shim at `/usr/local/bin/docker`).
 
 ```bash
 # Verify
-iso click docker ps
+iso acm docker run --rm -v /Users/Workspaces/acm:/app alpine echo OK    # allowed
+iso acm docker run --rm -v /Users/admin/.ssh:/mnt alpine cat /mnt/id_rsa # blocked
 ```
 
 ## Chrome MCP (browser access from sandbox)

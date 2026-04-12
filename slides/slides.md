@@ -312,6 +312,33 @@ docker run --network=iso-acm clickhouse    # ✅ starts
 
 ---
 
+## Docker Volume Mount Attack
+
+Docker socket = root access to the filesystem. A sandboxed agent can:
+
+```bash
+docker run -v /Users/admin/.ssh:/mnt alpine cat /mnt/id_rsa  # 💀
+```
+
+**Solution: per-user Docker socket proxy** that inspects every `containers/create` API call:
+
+```
+agent → /tmp/isolator-docker/acm.sock → proxy → Docker daemon
+        (checks Binds, blocks /Users/admin)
+```
+
+| What | Allowed? |
+|------|:---:|
+| `-v /Users/Workspaces/acm/:/app` | Yes |
+| `-v /tmp/test:/data` | Yes |
+| `-v /Users/admin/.ssh:/mnt` | **No** |
+| `--privileged` | **No** |
+| `--net=host` | **No** |
+
+Proxy runs as admin (no sudo). Auto-started by `iso` on first use.
+
+---
+
 ## Safe Browser Access for Agents
 
 Agents need browsers for testing, auth flows, and screenshots.
