@@ -49,6 +49,9 @@ PF_CONF = Path("/etc/pf.conf")
 BASE_UID = 600
 DOCKER_SUBNET_BASE = "172.30"  # per-user: 172.30.0.0/24, 172.30.1.0/24, ...
 NETSHOOT_IMAGE = "nicolaka/netshoot"
+SSH_KEY_NAME = "isolator"  # ~/.ssh/isolator (single key for all sandbox users)
+SSH_OPTS = ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "LogLevel=ERROR"]
 
 SHELL_RC_FILES = {
     "bash": [".bash_profile", ".bashrc"],
@@ -565,6 +568,44 @@ def set_ownership(name):
             run(["chown", "-R", f"{name}:staff", str(path)])
 
 
+def ssh_key_path(admin):
+    """Return path to admin's isolator SSH private key."""
+    return Path(f"/Users/{admin}/.ssh/{SSH_KEY_NAME}")
+
+
+def setup_ssh_key(name, admin):
+    """Generate admin keypair (once) and install public key for sandbox user."""
+    admin_home = Path(f"/Users/{admin}")
+    user_home = Path(f"/Users/{name}")
+
+    priv_key = admin_home / ".ssh" / SSH_KEY_NAME
+
+    # Generate keypair if it doesn't exist
+    if not priv_key.exists():
+        (admin_home / ".ssh").mkdir(mode=0o700, exist_ok=True)
+        run(["ssh-keygen", "-t", "ed25519", "-f", str(priv_key),
+             "-N", "", "-q", "-C", f"isolator@{subprocess.run(['hostname', '-s'], capture_output=True, text=True).stdout.strip()}"])
+        run(["chmod", "600", str(priv_key)])
+        run(["chown", f"{admin}:staff", str(priv_key), str(priv_key.with_suffix(".pub"))])
+        print(f"  Generated SSH keypair: {priv_key}")
+
+    pub_key = priv_key.with_suffix(".pub").read_text().strip()
+
+    # Install public key in sandbox user's authorized_keys
+    user_ssh = user_home / ".ssh"
+    user_ssh.mkdir(exist_ok=True)
+    auth_keys = user_ssh / "authorized_keys"
+    auth_keys.write_text(pub_key + "\n")
+    run(["chown", "-R", f"{name}:staff", str(user_ssh)])
+    run(["chmod", "700", str(user_ssh)])
+    run(["chmod", "600", str(auth_keys)])
+
+    # Add to SSH service ACL group
+    run(["dscl", ".", "-append", "/Groups/com.apple.access_ssh",
+         "GroupMembership", name], check=False)
+    print(f"  SSH key installed, added to SSH access group")
+
+
 def exclude_from_backup(name):
     """Exclude user home and keychain password from Time Machine."""
     home = Path(f"/Users/{name}")
@@ -633,6 +674,7 @@ def cmd_create(name, config, from_user=None):
     inject_auth(name, user_config)
     create_skeleton(name)
     create_docker_network(name, config)
+    setup_ssh_key(name, admin)
     ensure_shared_tool_access()
     set_ownership(name)
     exclude_from_backup(name)
@@ -840,13 +882,11 @@ def cmd_pf(config, dry_run=False):
 
 # ── Run command ─────────────────────────────────────────────────────────────
 
-def cmd_run(user, command, args):
-    """Run a command as an isolated user via sudo."""
-    # Unlock keychain before launching (reads root-only password file via sudo)
+def unlock_user_keychain(user):
+    """Unlock a user's keychain via sudo (reads root-only password file)."""
     kc_file = Path(f"/Users/{user}/Library/Keychains/{KEYCHAIN_NAME}")
     pass_file = KEYCHAIN_PASS_DIR / user
     if kc_file.exists() and pass_file.exists():
-        # sudo cat to read root-only file, then unlock
         r = subprocess.run(["sudo", "cat", str(pass_file)],
                            capture_output=True, text=True)
         if r.returncode == 0:
@@ -854,8 +894,29 @@ def cmd_run(user, command, args):
             subprocess.run(
                 ["sudo", "security", "unlock-keychain", "-p", kc_pass, str(kc_file)],
                 capture_output=True)
+
+
+def build_ssh_cmd(user, command, extra, args):
+    """Build SSH command to run as sandboxed user."""
+    admin = os.environ.get("USER", "bvt")
+    priv_key = ssh_key_path(admin)
+    return ["ssh", "-t", "-i", str(priv_key)] + SSH_OPTS + [
+        f"{user}@127.0.0.1", command] + extra + args
+
+
+def cmd_run(user, command, args):
+    """Run a command as an isolated user via SSH (fallback: sudo)."""
+    unlock_user_keychain(user)
     extra = COMMAND_FLAGS.get(command, [])
-    os.execvp("sudo", ["sudo", "-u", user, "-i", command] + extra + args)
+
+    admin = os.environ.get("USER", "bvt")
+    priv_key = ssh_key_path(admin)
+    if priv_key.exists():
+        # SSH mode: proper login session
+        os.execvp("ssh", build_ssh_cmd(user, command, extra, args))
+    else:
+        # Fallback: sudo mode
+        os.execvp("sudo", ["sudo", "-u", user, "-i", command] + extra + args)
 
 
 # ── Remote command ──────────────────────────────────────────────────────────
@@ -896,20 +957,16 @@ def cmd_remote(user, args):
 
     bg = "--bg" in args
 
-    # Unlock keychain
-    kc_file = Path(f"/Users/{user}/Library/Keychains/{KEYCHAIN_NAME}")
-    pass_file = KEYCHAIN_PASS_DIR / user
-    if kc_file.exists() and pass_file.exists():
-        r = subprocess.run(["sudo", "cat", str(pass_file)],
-                           capture_output=True, text=True)
-        if r.returncode == 0:
-            kc_pass = r.stdout.strip()
-            subprocess.run(
-                ["sudo", "security", "unlock-keychain", "-p", kc_pass, str(kc_file)],
-                capture_output=True)
+    unlock_user_keychain(user)
 
-    remote_cmd = ["sudo", "-u", user, "-i",
-                  "claude", "--remote", "--permission-mode", "bypassPermissions"]
+    admin = os.environ.get("USER", "bvt")
+    priv_key = ssh_key_path(admin)
+    if priv_key.exists():
+        remote_cmd = build_ssh_cmd(user, "claude",
+                                   ["--remote", "--permission-mode", "bypassPermissions"], [])
+    else:
+        remote_cmd = ["sudo", "-u", user, "-i",
+                      "claude", "--remote", "--permission-mode", "bypassPermissions"]
 
     if bg:
         REMOTE_PID_DIR.mkdir(exist_ok=True)

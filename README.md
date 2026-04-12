@@ -33,21 +33,25 @@ No third-party Python packages needed — stdlib only.
 sudo mkdir -p /etc/isolator
 sudo cp etc/config.toml /etc/isolator/config.toml
 sudo cp etc/profile /etc/isolator/profile
-sudo chmod 644 /etc/isolator/config.toml /etc/isolator/profile
+sudo cp etc/CLAUDE.md /etc/isolator/CLAUDE.md
+sudo chmod 644 /etc/isolator/config.toml /etc/isolator/profile /etc/isolator/CLAUDE.md
 
 # 2. Edit config.toml — set your admin username
 
-# 3. Install iso to PATH
+# 3. Enable Remote Login (for SSH-based isolation)
+#    System Settings → General → Sharing → Remote Login → ON
+
+# 4. Install iso to PATH
 sudo cp bin/iso /usr/local/bin/iso
 
-# 4. Create users (auto-added to config.toml if not present)
+# 5. Create users (auto-added to config.toml if not present)
 iso create acm --keychain
 iso create click --keychain
 
-# 5. Load firewall rules (optional)
+# 6. Load firewall rules (optional)
 iso pf
 
-# 6. Run
+# 7. Run (uses SSH under the hood — proper macOS login session)
 iso acm claude
 iso click codex
 ```
@@ -211,6 +215,25 @@ Codex auth is handled by copying a curated subset of the source user's `~/.codex
 - `config.toml` — with source-user `[projects."..."]` trust entries removed, bypass mode enabled
 - `auth.json` — Codex login state
 - `plugins/`, `skills/`, `agents/`, `AGENTS.md`
+
+## SSH mode
+
+`iso` uses SSH to localhost instead of `sudo -u` for switching to sandboxed users. This creates a proper macOS login session, which fixes several issues with the sudo approach:
+
+| Problem with sudo | SSH fixes it |
+|---|---|
+| "Keychain Not Found" dialogs | Real login session |
+| Safari opens instead of Chrome | Launch Services works |
+| Workspace trust prompt every time | Session state persists |
+| Chrome zombie processes | Clean process lifecycle |
+
+A single Ed25519 keypair is generated on first `iso create`. The public key is installed to every sandboxed user's `~/.ssh/authorized_keys`.
+
+**Prerequisites:**
+- Remote Login enabled: System Settings → General → Sharing → Remote Login → ON
+- `iso create` handles everything else (key generation, SSH ACL group, authorized_keys)
+
+If `~/.ssh/isolator` doesn't exist, `iso` falls back to sudo mode automatically.
 
 ## Config
 
