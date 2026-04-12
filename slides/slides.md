@@ -222,7 +222,7 @@ hosts = ["api.anthropic.com"]
   .local/bin/                       pip installs
   .npm-global/                      npm installs
 
-/Users/Workspaces/                  shared project directories
+/Users/Workspaces/acm/              project workspace (shared with admin)
 ```
 
 Shared tools (read-only):

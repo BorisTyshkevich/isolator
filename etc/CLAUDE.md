@@ -4,7 +4,7 @@ You are running as an isolated macOS user. Your filesystem, network, and credent
 
 ## Workspaces
 
-Project directories are in `/Users/Workspaces/`. You start here by default. Each project has its own subdirectory.
+Your workspace is `/Users/Workspaces/<your-username>/`. You start here by default. Place project code here.
 
 ## Chrome Browser — CRITICAL
 

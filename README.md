@@ -318,22 +318,16 @@ What does NOT get copied: `~/.env`, `~/.ssh`, `~/.aws`, `~/.kube`, session histo
 
 ## Workspaces
 
-All projects live in `/Users/Workspaces/`:
+Each sandbox user gets a workspace in `/Users/Workspaces/<user>/`, created by `iso create`:
 
 ```bash
 /Users/Workspaces/
-  acm-project/          # ACM project
-  clickhouse/           # ClickHouse source
-  my-experiment/        # any project
+  acm/                  # iso acm claude starts here
+  click/                # iso click codex starts here
+  otel/                 # iso otel claude starts here
 ```
 
-`iso acm claude` starts in `/Users/Workspaces/` by default. Create project dirs as admin:
-
-```bash
-mkdir /Users/Workspaces/my-project
-# or clone directly:
-iso acm git clone https://github.com/... /Users/Workspaces/my-project
-```
+`iso acm claude`, `iso acm bash`, `iso acm` — all start in `/Users/Workspaces/acm/`. Admin has full read/write access via ACL.
 
 Workspaces are **not deleted** by `iso delete` — your project code survives user recreation.
 

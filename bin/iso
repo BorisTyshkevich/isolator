@@ -512,13 +512,21 @@ def inject_auth(name, user_config):
 
 # ── Ownership ───────────────────────────────────────────────────────────────
 
-def create_skeleton(name):
+def create_skeleton(name, admin):
     home = Path(f"/Users/{name}")
     for d in [".local/bin", ".local/lib", ".npm-global", ".cache"]:
         (home / d).mkdir(parents=True, exist_ok=True)
-    # Shared workspaces directory
+    # Shared workspaces root
     WORKSPACES_DIR.mkdir(mode=0o775, exist_ok=True)
     run(["chown", "root:staff", str(WORKSPACES_DIR)], check=False)
+    # Per-user workspace
+    user_ws = WORKSPACES_DIR / name
+    user_ws.mkdir(exist_ok=True)
+    run(["chown", f"{name}:staff", str(user_ws)])
+    run(["chmod", "+a",
+         f"{admin} allow read,write,append,delete,list,search,readattr,writeattr,readextattr,writeextattr,readsecurity,file_inherit,directory_inherit",
+         str(user_ws)])
+    print(f"  Workspace: {user_ws}")
 
 
 def set_ownership(name):
@@ -676,7 +684,7 @@ def cmd_create(name, config, from_user=None):
     copy_claude_config(name, source)
     copy_codex_config(name, source)
     inject_auth(name, user_config)
-    create_skeleton(name)
+    create_skeleton(name, admin)
     create_docker_network(name, config)
     setup_ssh_key(name, admin)
     ensure_shared_tool_access()
@@ -916,7 +924,8 @@ def cmd_run(user, command, args):
     """Run a command as an isolated user via SSH (fallback: sudo)."""
     unlock_user_keychain(user)
     extra = COMMAND_FLAGS.get(command, [])
-    cwd = str(WORKSPACES_DIR) if WORKSPACES_DIR.exists() else None
+    user_ws = WORKSPACES_DIR / user
+    cwd = str(user_ws) if user_ws.exists() else None
 
     admin = os.environ.get("USER", "bvt")
     priv_key = ssh_key_path(admin)
@@ -975,7 +984,8 @@ def cmd_remote(user, args):
     admin = os.environ.get("USER", "bvt")
     priv_key = ssh_key_path(admin)
     if priv_key.exists():
-        cwd = str(WORKSPACES_DIR) if WORKSPACES_DIR.exists() else None
+        user_ws = WORKSPACES_DIR / user
+        cwd = str(user_ws) if user_ws.exists() else None
         remote_cmd = build_ssh_cmd(user, "claude",
                                    ["--remote", "--permission-mode", "bypassPermissions"], [],
                                    cwd)
