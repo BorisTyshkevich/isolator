@@ -820,40 +820,41 @@ def generate_docker_iptables(config):
     rules = []
 
     # Flush DOCKER-USER chain
-    rules.append("iptables -F DOCKER-USER")
+    # Build into staging chain DOCKER-USER-NEW, then atomic swap.
+    # Avoids the brief window where DOCKER-USER is empty and traffic flows free.
+    rules.append("iptables -N DOCKER-USER-NEW 2>/dev/null || iptables -F DOCKER-USER-NEW")
 
     for name, user_config in users.items():
         subnet = user_subnet(config, name)
         log = should_log(user_config)
 
         if is_unrestricted(user_config):
-            # Unrestricted user — allow all, optionally log
             if log:
-                rules.append(f"iptables -A DOCKER-USER -s {subnet} -j LOG --log-prefix 'iso-{name}: '")
-            rules.append(f"iptables -A DOCKER-USER -s {subnet} -j ACCEPT")
+                rules.append(f"iptables -A DOCKER-USER-NEW -s {subnet} -j LOG --log-prefix 'iso-{name}: '")
+            rules.append(f"iptables -A DOCKER-USER-NEW -s {subnet} -j ACCEPT")
             continue
 
         hosts = user_config.get("hosts", []) + global_hosts
         ips = resolve_hosts(hosts)
 
-        # Allow container-to-container on same subnet
-        rules.append(f"iptables -A DOCKER-USER -s {subnet} -d {subnet} -j ACCEPT")
-        # Allow DNS
-        rules.append(f"iptables -A DOCKER-USER -s {subnet} -p udp --dport 53 -j ACCEPT")
-        # Allow whitelisted IPs
+        rules.append(f"iptables -A DOCKER-USER-NEW -s {subnet} -d {subnet} -j ACCEPT")
+        rules.append(f"iptables -A DOCKER-USER-NEW -s {subnet} -p udp --dport 53 -j ACCEPT")
         for ip in ips:
-            rules.append(f"iptables -A DOCKER-USER -s {subnet} -d {ip} -p tcp --dport 443 -j ACCEPT")
-        # Log dropped traffic
+            rules.append(f"iptables -A DOCKER-USER-NEW -s {subnet} -d {ip} -p tcp --dport 443 -j ACCEPT")
         if log:
-            rules.append(f"iptables -A DOCKER-USER -s {subnet} -j LOG --log-prefix 'iso-{name}-drop: '")
-        # Drop everything else from this subnet
-        rules.append(f"iptables -A DOCKER-USER -s {subnet} -j DROP")
+            rules.append(f"iptables -A DOCKER-USER-NEW -s {subnet} -j LOG --log-prefix 'iso-{name}-drop: '")
+        rules.append(f"iptables -A DOCKER-USER-NEW -s {subnet} -j DROP")
 
-    # Block default bridge network — sandboxed users must use iso-<user> network
-    # (proxy enforces NetworkMode == iso-<user>, this is defense-in-depth)
-    rules.append("iptables -A DOCKER-USER -s 172.17.0.0/16 -j DROP")
-    # Default: allow all other Docker traffic (admin's containers, custom networks)
-    rules.append("iptables -A DOCKER-USER -j ACCEPT")
+    # Block default bridge — sandboxed agents must use iso-<user>
+    rules.append("iptables -A DOCKER-USER-NEW -s 172.17.0.0/16 -j DROP")
+    # Default: allow other Docker traffic (admin's containers)
+    rules.append("iptables -A DOCKER-USER-NEW -j ACCEPT")
+
+    # Atomic swap: rename old → backup, new → DOCKER-USER, drop backup
+    rules.append("iptables -E DOCKER-USER DOCKER-USER-OLD 2>/dev/null || true")
+    rules.append("iptables -E DOCKER-USER-NEW DOCKER-USER")
+    rules.append("iptables -F DOCKER-USER-OLD 2>/dev/null || true")
+    rules.append("iptables -X DOCKER-USER-OLD 2>/dev/null || true")
     return rules
 
 

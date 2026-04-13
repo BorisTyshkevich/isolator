@@ -16,6 +16,7 @@ import threading
 from pathlib import Path
 
 WORKSPACES_DIR = "/Users/Workspaces"
+MAX_BODY_SIZE = 16 * 1024 * 1024  # 16 MB — generous for create JSON, blocks OOM
 
 
 def log(user, msg):
@@ -57,7 +58,50 @@ DANGEROUS_HOST_CONFIG = {
     "CapAdd", "CapDrop", "SecurityOpt", "PidMode", "IpcMode", "UTSMode",
     "UsernsMode", "CgroupnsMode", "CgroupParent", "Cgroup", "Runtime",
     "Sysctls", "Ulimits", "OomScoreAdj", "OomKillDisable",
+    "ExtraHosts", "DNS", "DNSOptions", "DNSSearch",  # DNS/host spoofing
+    "Links",  # legacy, redundant — disallow
 }
+
+# Default-deny endpoint allowlist. Anything not matching one of these
+# regex patterns is rejected. Matches against just the path (no query).
+import re
+_GENERIC_ENDPOINT_ALLOW = [
+    re.compile(p) for p in [
+        r"^/v[\d.]+/_ping$",
+        r"^/_ping$",
+        r"^/v[\d.]+/version$",
+        r"^/v[\d.]+/info$",
+        r"^/v[\d.]+/containers/json$",  # list
+        r"^/v[\d.]+/containers/create$",  # validated separately
+        r"^/v[\d.]+/containers/[a-zA-Z0-9_.-]+/(start|stop|restart|kill|pause|unpause|wait|attach|logs|inspect|stats|top|changes|export|exec|json)(/.*)?$",
+        r"^/v[\d.]+/containers/[a-zA-Z0-9_.-]+/archive$",
+        r"^/v[\d.]+/containers/[a-zA-Z0-9_.-]+$",  # delete
+        r"^/v[\d.]+/exec/[a-zA-Z0-9_.-]+/(start|resize|json)$",
+        r"^/v[\d.]+/images/.*$",  # pull, list, inspect, delete
+        r"^/v[\d.]+/build$",  # docker build (uploads context tar)
+        r"^/v[\d.]+/networks/json$",
+        r"^/v[\d.]+/networks/bridge(/.*)?$",
+        r"^/v[\d.]+/volumes/.*$",  # named volumes (no host paths)
+        r"^/v[\d.]+/system/df$",
+        r"^/v[\d.]+/system/events$",
+    ]
+]
+
+
+def is_endpoint_allowed(method, path, user="acm"):
+    """Default-deny: only specific endpoints pass.
+
+    Network endpoints restricted to iso-<user> only — other users' networks
+    and arbitrary network names are rejected.
+    """
+    plain = path.split("?", 1)[0]
+    if any(p.match(plain) for p in _GENERIC_ENDPOINT_ALLOW):
+        return True
+    # User-specific iso network endpoint: /vX/networks/iso-<user> or .../iso-<user>/sub
+    iso_net_re = re.compile(rf"^/v[\d.]+/networks/iso-{re.escape(user)}(/.*)?$")
+    if iso_net_re.match(plain):
+        return True
+    return False
 
 
 def check_create(body_bytes, user):
@@ -80,11 +124,20 @@ def check_create(body_bytes, user):
         if val:
             return False, f"{field} is not allowed", body_bytes
 
-    # Network: must be empty (default), bridge, or iso-<user>
+    # NetworkMode: only iso-<user> network (bridge has no egress filtering).
+    # Empty/default/bridge are allowed but will be dropped by iptables — the
+    # agent will see "no route" for any egress, which is a feature.
     nm = hc.get("NetworkMode", "")
     allowed_networks = {"", "default", "bridge", f"iso-{user}"}
     if nm not in allowed_networks:
-        return False, f"NetworkMode {nm!r} not allowed (must be: bridge or iso-{user})", body_bytes
+        return False, f"NetworkMode {nm!r} not allowed (use iso-{user})", body_bytes
+
+    # NetworkingConfig.EndpointsConfig — additional networks to attach.
+    # Only iso-<user> is allowed (prevents joining other users' networks).
+    nc = data.get("NetworkingConfig") or {}
+    for ep_name in (nc.get("EndpointsConfig") or {}).keys():
+        if ep_name not in allowed_networks:
+            return False, f"network {ep_name!r} not allowed (use iso-{user})", body_bytes
 
     # Validate AND rewrite Binds to use resolved paths (TOCTOU-safe)
     new_binds = []
@@ -108,15 +161,25 @@ def check_create(body_bytes, user):
     # Validate AND rewrite Mounts (Type=bind)
     new_mounts = []
     for mount in hc.get("Mounts") or []:
-        if mount.get("Type") == "bind":
+        mtype = mount.get("Type")
+        if mtype == "bind":
             source = mount.get("Source", "")
             resolved = resolve_path(source)
             if not is_path_allowed(resolved, user):
                 return False, f"mount not allowed: {source}", body_bytes
             if "docker.sock" in resolved:
                 return False, "mounting Docker socket is not allowed", body_bytes
-            mount = dict(mount)  # don't mutate original
+            mount = dict(mount)
             mount["Source"] = resolved
+        elif mtype == "volume":
+            # Volume with DriverConfig.Options.device = bind mount in disguise
+            vo = (mount.get("VolumeOptions") or {}).get("DriverConfig") or {}
+            if (vo.get("Options") or {}).get("device"):
+                return False, "volume DriverConfig.device not allowed (bind mount via volume)", body_bytes
+        elif mtype == "tmpfs":
+            pass  # tmpfs is fine
+        else:
+            return False, f"mount type {mtype!r} not allowed", body_bytes
         new_mounts.append(mount)
     if hc.get("Mounts"):
         hc["Mounts"] = new_mounts
@@ -194,6 +257,19 @@ def handle(client, upstream_path, user, expected_uid, check_peer=True):
             method = parts[0] if parts else ""
             path = parts[1] if len(parts) > 1 else ""
 
+            # Endpoint allowlist (default-deny)
+            if not is_endpoint_allowed(method, path, user):
+                err = json.dumps({"message": f"isolator: endpoint not allowed: {method} {path}"})
+                resp = (
+                    f"HTTP/1.1 403 Forbidden\r\n"
+                    f"Content-Type: application/json\r\n"
+                    f"Content-Length: {len(err)}\r\n"
+                    f"Connection: close\r\n\r\n{err}"
+                ).encode()
+                client.sendall(resp)
+                log(user, f"BLOCKED endpoint: {method} {path}")
+                return
+
             # Reject smuggling vectors: Transfer-Encoding and duplicate Content-Length
             cl_count = 0
             content_length = 0
@@ -223,6 +299,20 @@ def handle(client, upstream_path, user, expected_uid, check_peer=True):
                 ).encode()
                 client.sendall(resp)
                 log(user, "BLOCKED: duplicate Content-Length (smuggling)")
+                return
+
+            # Reject oversize bodies — we buffer in memory, OOM defense.
+            # /build can stream large context tars, so allow it via raw passthrough later.
+            if content_length > MAX_BODY_SIZE and "/build" not in path:
+                err = json.dumps({"message": f"isolator: request body too large ({content_length} bytes)"})
+                resp = (
+                    f"HTTP/1.1 413 Payload Too Large\r\n"
+                    f"Content-Type: application/json\r\n"
+                    f"Content-Length: {len(err)}\r\n"
+                    f"Connection: close\r\n\r\n{err}"
+                ).encode()
+                client.sendall(resp)
+                log(user, f"BLOCKED: oversize body {content_length}")
                 return
 
             # Read body

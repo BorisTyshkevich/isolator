@@ -202,6 +202,61 @@ class TestCheckCreate(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("UsernsMode", reason)
 
+    def test_blocked_extra_hosts(self):
+        ok, reason, _ = check_create(
+            self._make_request(ExtraHosts=["api.anthropic.com:1.2.3.4"]),
+            "acm")
+        self.assertFalse(ok)
+        self.assertIn("ExtraHosts", reason)
+
+    def test_blocked_dns_override(self):
+        ok, reason, _ = check_create(
+            self._make_request(DNS=["1.1.1.1"]),
+            "acm")
+        self.assertFalse(ok)
+        self.assertIn("DNS", reason)
+
+    def test_blocked_endpoints_other_user_network(self):
+        body = json.dumps({
+            "Image": "alpine",
+            "HostConfig": {"NetworkMode": "iso-acm"},
+            "NetworkingConfig": {"EndpointsConfig": {"iso-click": {}}}
+        }).encode()
+        ok, reason, _ = check_create(body, "acm")
+        self.assertFalse(ok)
+        self.assertIn("iso-click", reason)
+
+    def test_blocked_volume_driver_device(self):
+        body = json.dumps({
+            "Image": "alpine",
+            "HostConfig": {
+                "Mounts": [{
+                    "Type": "volume",
+                    "Source": "myvol",
+                    "Target": "/data",
+                    "VolumeOptions": {
+                        "DriverConfig": {
+                            "Name": "local",
+                            "Options": {"device": "/Users/bvt", "type": "none", "o": "bind"}
+                        }
+                    }
+                }]
+            }
+        }).encode()
+        ok, reason, _ = check_create(body, "acm")
+        self.assertFalse(ok)
+        self.assertIn("DriverConfig.device", reason)
+
+    def test_blocked_unknown_mount_type(self):
+        body = json.dumps({
+            "Image": "alpine",
+            "HostConfig": {
+                "Mounts": [{"Type": "weird", "Source": "x", "Target": "/x"}]
+            }
+        }).encode()
+        ok, reason, _ = check_create(body, "acm")
+        self.assertFalse(ok)
+
     def test_blocked_explicit_root_user(self):
         body = json.dumps({
             "Image": "alpine",
