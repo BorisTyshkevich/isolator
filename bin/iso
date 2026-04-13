@@ -390,6 +390,30 @@ def ensure_shared_tool_access():
 #
 # Other env vars (OPENAI_API_KEY, etc.): injected from config key files → .env
 
+def create_empty_keychain(name):
+    """Create an empty default keychain so Claude Code can store credentials.
+
+    Uses a fixed password ("isolator") since the keychain is protected by
+    filesystem permissions (chmod 700 on home). The password isn't a
+    security boundary — the keychain entry ACLs are.
+    """
+    home = Path(f"/Users/{name}")
+    kc_dir = home / "Library" / "Keychains"
+    kc_file = kc_dir / KEYCHAIN_NAME
+
+    if kc_file.exists():
+        return  # already exists
+
+    kc_dir.mkdir(parents=True, exist_ok=True)
+    run(["chown", "-R", f"{name}:staff", str(home / "Library")])
+    run_as(name, ["security", "create-keychain", "-p", "isolator", str(kc_file)])
+    run_as(name, ["security", "default-keychain", "-s", str(kc_file)])
+    run_as(name, ["security", "list-keychains", "-s", str(kc_file)])
+    run_as(name, ["security", "set-keychain-settings", str(kc_file)])  # no auto-lock
+    run_as(name, ["security", "unlock-keychain", "-p", "isolator", str(kc_file)])
+    print(f"  Created empty default keychain")
+
+
 def inject_auth_keyfiles(name, user_config):
     """Inject env vars from key files defined in config [users.<name>.auth]."""
     auth = user_config.get("auth", {})
@@ -582,6 +606,7 @@ def cmd_create(name, config, from_user=None):
     copy_claude_config(name, source)
     copy_codex_config(name, source)
     inject_auth_keyfiles(name, user_config)
+    create_empty_keychain(name)
     create_skeleton(name, admin)
     create_docker_network(name, config)
     setup_ssh_key(name, admin)

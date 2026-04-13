@@ -1,7 +1,11 @@
 # Isolator profile — sourced at end of slot user's login rc
 # Layers overrides on top of the admin's shell config
 
-# Keychain is unlocked by the iso script before launch (password in /etc/isolator/keychain/)
+# Unlock the user's keychain so Claude Code can store credentials.
+# Password is fixed ("isolator") — keychain entries are protected by their
+# own ACLs; the keychain password isn't the security boundary.
+KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
+[[ -f "$KEYCHAIN" ]] && security unlock-keychain -p isolator "$KEYCHAIN" 2>/dev/null
 
 # Environment variables from config key files (OPENAI_API_KEY, etc.)
 [[ -f "$HOME/.env" ]] && source "$HOME/.env"
