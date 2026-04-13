@@ -53,15 +53,19 @@ cp "$SCRIPT_DIR/bin/docker-proxy" /usr/local/bin/docker-proxy
 chmod 755 /usr/local/bin/iso /usr/local/bin/docker-proxy
 ok "iso and docker-proxy installed to /usr/local/bin/"
 
-# 3. Docker socket hardlink (for OrbStack)
-info "Setting up Docker socket"
-ORBSTACK_SOCK="/Users/$ADMIN/.orbstack/run/docker.sock"
-if [[ -S "$ORBSTACK_SOCK" ]]; then
-    cp "$SCRIPT_DIR/etc/com.isolator.docker-proxy.plist" /Library/LaunchDaemons/
-    launchctl load /Library/LaunchDaemons/com.isolator.docker-proxy.plist 2>/dev/null || true
-    ok "Docker socket launchd job installed"
-else
-    warn "OrbStack socket not found, skipping Docker setup"
+# 3. Remove any old hardlink (sandbox users must use proxy, not direct socket)
+if [[ -f /Library/LaunchDaemons/com.isolator.docker-proxy.plist ]]; then
+    launchctl unload /Library/LaunchDaemons/com.isolator.docker-proxy.plist 2>/dev/null || true
+    rm -f /Library/LaunchDaemons/com.isolator.docker-proxy.plist
+fi
+# Don't recreate /var/run/docker.sock — admin uses orbstack context,
+# sandbox users use per-user proxy socket only
+if [[ -e /var/run/docker.sock && ! -L /var/run/docker.sock ]]; then
+    # It's a hardlink we created — remove it
+    if [[ "$(stat -f %Su /var/run/docker.sock 2>/dev/null)" == "$ADMIN" ]] || [[ "$(stat -f %Su /var/run/docker.sock 2>/dev/null)" == "root" ]]; then
+        rm -f /var/run/docker.sock
+        ok "Removed unused /var/run/docker.sock hardlink"
+    fi
 fi
 
 # 4. Workspaces directory (root-owned 755 — only root creates per-user dirs)

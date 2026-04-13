@@ -213,7 +213,6 @@ Users are auto-added to config when created via `iso create <name>`.
 | `bin/iso` | Unified command: create, delete, run, firewall |
 | `etc/config.toml` | User definitions, allowed hosts, optional auth key paths |
 | `etc/profile` | Shell profile sourced by all isolated users |
-| `etc/com.isolator.docker-proxy.plist` | launchd plist for Docker socket proxy |
 | `specs/spec.md` | Design spec (macOS) |
 | `specs/spec-linux.md` | Design spec (Linux) |
 | `slides/` | Presentation slides (Marp source + HTML + PDF) |
@@ -283,32 +282,23 @@ Users read `/opt/homebrew` and `/usr/local` but can't write. Upgrade a tool once
 
 ## Docker (OrbStack)
 
-### Socket access
+### Socket access (proxy-only, no shared socket)
 
-OrbStack's socket lives inside the admin's home — sandboxed users can't reach it. A launchd daemon creates a hardlink at `/var/run/docker.sock`:
+OrbStack's socket is inside the admin's home (`~/.orbstack/run/docker.sock`) — sandboxed users can't traverse there. Each gets a per-user filtered socket at `/var/run/isolator-docker/<user>.sock`. There is **no `/var/run/docker.sock`** — sandbox users have no path to the unfiltered daemon.
 
-```bash
-sudo cp etc/com.isolator.docker-proxy.plist /Library/LaunchDaemons/
-sudo launchctl load /Library/LaunchDaemons/com.isolator.docker-proxy.plist
-```
+The proxy is auto-started by `iso` on first use (no manual setup). Admin keeps using Docker via OrbStack context.
 
 ### Volume mount protection
 
-**The problem:** Docker socket = root-level filesystem access. A sandboxed agent can `docker run -v /Users/admin/.ssh:/mnt` and read all your credentials.
+**The problem:** Docker socket = root-level filesystem access. A sandboxed agent could `docker run -v /Users/admin/.ssh:/mnt` and read all your credentials.
 
-**The fix:** per-user Docker socket proxy. Each sandboxed user gets a filtered socket that blocks dangerous mounts:
+**The fix:** per-user proxy filters every `containers/create` request:
+- **Bind mounts**: only `/Users/Workspaces/<user>/` (paths rewritten via `realpath()` for TOCTOU safety)
+- **NetworkMode**: only `bridge` or `iso-<user>` (other networks rejected)
+- **Rejected fields**: `Privileged`, `--net=host`, `--pid=host`, `--volumes-from`, `--device`, `CapAdd`, `SecurityOpt`, `IpcMode`, `UTSMode`, `UsernsMode`, `CgroupnsMode`, `CgroupParent`, `Runtime`, `Sysctls`, `Ulimits`, `OomScoreAdj`, `OomKillDisable`, `DeviceCgroupRules`, `DeviceRequests`
+- **Rejected**: explicit `User=root`, `Transfer-Encoding` headers, duplicate `Content-Length` (HTTP smuggling)
 
-```
-agent → /tmp/isolator-docker/acm.sock → proxy → Docker daemon
-```
-
-The proxy inspects every `containers/create` API call and blocks:
-- Bind mounts outside `/Users/Workspaces/<user>/` and `/tmp/`
-- `--privileged`, `--net=host`, `--pid=host`
-- `--volumes-from`, `--device`
-- Mounting the Docker socket into containers
-
-The proxy runs as admin (no sudo), auto-started by `iso` on first use. Sandboxed users must use `/opt/homebrew/bin/docker` (not the OrbStack shim at `/usr/local/bin/docker`).
+Sandboxed users must use `/opt/homebrew/bin/docker` (not the OrbStack shim at `/usr/local/bin/docker`, which bypasses `DOCKER_HOST`).
 
 ```bash
 # Verify

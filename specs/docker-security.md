@@ -117,8 +117,25 @@ networks:
 - The `nsenter` approach requires the `nicolaka/netshoot` image (pulled automatically).
 - Container DNS resolution works, but the resolved IPs may not be in the whitelist.
   Use IP-based whitelisting or pre-resolve in `iso pf`.
-- The agent could theoretically create its own Docker network without restrictions.
-  Mitigate by restricting Docker API access (future: socket proxy).
+
+## Docker socket proxy (per-user)
+
+Sandbox users **cannot** reach Docker daemon directly. Each user gets a
+filtered socket at `/var/run/isolator-docker/<user>.sock` that proxies
+requests to OrbStack's socket (`~/.orbstack/run/docker.sock`, inside admin's
+chmod 700 home — sandbox users can't traverse).
+
+The proxy enforces (in `bin/docker-proxy`):
+- Bind mounts: only `/Users/Workspaces/<user>/` (paths rewritten via realpath)
+- NetworkMode: only `bridge` or `iso-<user>`
+- Rejects: `Privileged`, `--net=host`, `--pid=host`, `--volumes-from`, `--device`,
+  `CapAdd`, `SecurityOpt`, `IpcMode`, `UTSMode`, `UsernsMode`, `CgroupnsMode`,
+  `CgroupParent`, `Runtime`, `Sysctls`, `Ulimits`, `OomScoreAdj`, `OomKillDisable`,
+  `DeviceCgroupRules`, `DeviceRequests`, explicit User=root
+- Rejects: `Transfer-Encoding` and duplicate `Content-Length` (HTTP smuggling)
+
+There is **no `/var/run/docker.sock` hardlink**. Sandbox users only have
+the per-user proxy socket; no fallback path to the real daemon.
 
 ## Security model with Docker
 
@@ -126,7 +143,10 @@ networks:
 |--------|-----------|
 | Agent exfiltrates via host curl | macOS `pf` blocks by UID |
 | Agent exfiltrates via Docker container | Docker `iptables` blocks by subnet |
-| Agent creates unrestricted network | Future: Docker socket proxy |
-| Agent uses `--net=host` | Future: Docker socket proxy |
-| Container runtime installs malware | Egress blocked, can't download |
+| Agent uses `--net=host`, `--privileged`, etc. | Proxy rejects dangerous HostConfig |
+| Agent mounts `/Users/admin/.ssh` | Proxy rejects mounts outside workspace |
+| Agent swaps symlink mid-validation (TOCTOU) | Proxy rewrites paths to realpath |
+| Agent creates unrestricted Docker network | NetworkMode allowlist; iptables drops 172.17.0.0/16 |
+| Agent connects directly to docker.sock | No /var/run/docker.sock; OrbStack socket inside admin home |
+| Container runtime installs malware | Egress blocked unless host whitelisted |
 | Agent reads other user's containers | Docker namespacing (shared daemon caveat) |

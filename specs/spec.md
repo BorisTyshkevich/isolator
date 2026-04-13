@@ -224,7 +224,17 @@ Rules applied via `nsenter` into Docker's network namespace using `nicolaka/nets
 
 ### Docker socket access
 
-OrbStack's socket (`~/.orbstack/run/docker.sock`) is inside admin's home (chmod 700). A launchd daemon replaces the `/var/run/docker.sock` symlink with a hardlink — standard path, zero overhead, no proxy.
+OrbStack's socket (`~/.orbstack/run/docker.sock`) is inside admin's home (chmod 700). Sandbox users can't reach it directly, so each gets a per-user proxy socket at `/var/run/isolator-docker/<user>.sock`.
+
+The proxy filters every `containers/create` request:
+- Bind mounts must be in `/Users/Workspaces/<user>/`
+- `Privileged`, `--net=host`, `--pid=host`, `--volumes-from`, `--device` rejected
+- `CapAdd`, `SecurityOpt`, `IpcMode`, `UTSMode`, `UsernsMode`, etc. rejected
+- `NetworkMode` must be `bridge` or `iso-<user>`
+- Source paths rewritten to `realpath()` result (TOCTOU-safe)
+
+There is **no `/var/run/docker.sock`** — the agent has no fallback path.
+Admin uses Docker via OrbStack context (`~/.orbstack/run/docker.sock`).
 
 ---
 
