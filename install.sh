@@ -64,12 +64,27 @@ else
     warn "OrbStack socket not found, skipping Docker setup"
 fi
 
-# 4. Workspaces directory
+# 4. Workspaces directory (root-owned 755 — only root creates per-user dirs)
 info "Setting up /Users/Workspaces/"
 mkdir -p /Users/Workspaces
-chown root:staff /Users/Workspaces
-chmod 775 /Users/Workspaces
+chown root:wheel /Users/Workspaces
+chmod 755 /Users/Workspaces
 ok "Workspaces directory ready"
+
+# 5. Create isolator group (gid 700) — sandbox users go here, NOT staff
+info "Setting up isolator group"
+if ! dscl . -read /Groups/isolator >/dev/null 2>&1; then
+    dscl . -create /Groups/isolator
+    dscl . -create /Groups/isolator PrimaryGroupID 700
+    ok "Created group 'isolator' (gid 700)"
+else
+    ok "Group 'isolator' already exists"
+fi
+
+# 6. /var/run dirs for proxy/remote sockets (root-only)
+mkdir -p /var/run/isolator-docker /var/run/isolator-remote
+chown root:wheel /var/run/isolator-docker /var/run/isolator-remote
+chmod 755 /var/run/isolator-docker /var/run/isolator-remote
 
 # 5. Check prerequisites
 info "Checking prerequisites"

@@ -30,15 +30,34 @@ def resolve_path(path):
 
 
 def is_path_allowed(path, user):
+    """Allow only the user's own workspace. /tmp is shared and dangerous."""
     resolved = resolve_path(path)
     user_ws = f"{WORKSPACES_DIR}/{user}"
     if resolved == user_ws or resolved.startswith(user_ws + "/"):
         return True
-    if resolved == "/tmp" or resolved.startswith("/tmp/"):
-        return True
-    if resolved == "/private/tmp" or resolved.startswith("/private/tmp/"):
-        return True
     return False
+
+
+# HostConfig fields we explicitly allow (everything else gets default).
+# Anything dangerous must be explicitly handled in check_create.
+SAFE_HOST_CONFIG_FIELDS = {
+    "Binds", "Mounts", "NetworkMode", "PortBindings", "RestartPolicy",
+    "AutoRemove", "ContainerIDFile", "LogConfig", "VolumeDriver",
+    "ConsoleSize", "DnsOptions", "DnsSearch", "ExtraHosts", "GroupAdd",
+    "Memory", "MemorySwap", "MemorySwappiness", "MemoryReservation",
+    "CpuShares", "CpuPercent", "CpuQuota", "CpuPeriod", "CpusetCpus", "CpusetMems",
+    "NanoCpus", "BlkioWeight", "PidsLimit", "Isolation",
+    "ShmSize", "Tmpfs", "ReadonlyRootfs", "ReadonlyPaths", "MaskedPaths",
+    "PublishAllPorts", "Links",  # Links is deprecated but harmless
+}
+
+# Dangerous HostConfig fields that must be explicitly checked/rejected
+DANGEROUS_HOST_CONFIG = {
+    "Privileged", "VolumesFrom", "Devices", "DeviceCgroupRules", "DeviceRequests",
+    "CapAdd", "CapDrop", "SecurityOpt", "PidMode", "IpcMode", "UTSMode",
+    "UsernsMode", "CgroupnsMode", "CgroupParent", "Cgroup", "Runtime",
+    "Sysctls", "Ulimits", "OomScoreAdj", "OomKillDisable",
+}
 
 
 def check_create(body_bytes, user):
@@ -49,31 +68,44 @@ def check_create(body_bytes, user):
 
     hc = data.get("HostConfig") or {}
 
-    if hc.get("Privileged"):
-        return False, "privileged containers are not allowed"
-    if hc.get("NetworkMode") == "host":
-        return False, "--net=host is not allowed"
-    if hc.get("PidMode") == "host":
-        return False, "--pid=host is not allowed"
-    if hc.get("VolumesFrom"):
-        return False, "--volumes-from is not allowed"
-    if hc.get("Devices"):
-        return False, "--device mounts are not allowed"
+    # Reject any dangerous field that's set (truthy)
+    for field in DANGEROUS_HOST_CONFIG:
+        val = hc.get(field)
+        if val:  # non-empty list, dict, true, non-empty string
+            return False, f"{field} is not allowed"
 
+    # Network: must be empty (default), bridge, or iso-<user>
+    nm = hc.get("NetworkMode", "")
+    allowed_networks = {"", "default", "bridge", f"iso-{user}"}
+    if nm not in allowed_networks:
+        return False, f"NetworkMode {nm!r} not allowed (must be: bridge or iso-{user})"
+
+    # Bind mounts
     for bind in hc.get("Binds") or []:
         source = bind.split(":")[0]
         if not source.startswith("/"):
-            continue
+            continue  # named volume
         if not is_path_allowed(source, user):
             return False, f"bind mount not allowed: {source}"
         if "docker.sock" in resolve_path(source):
             return False, "mounting Docker socket is not allowed"
 
+    # Mount API
     for mount in hc.get("Mounts") or []:
         if mount.get("Type") == "bind":
             source = mount.get("Source", "")
             if not is_path_allowed(source, user):
                 return False, f"mount not allowed: {source}"
+            if "docker.sock" in resolve_path(source):
+                return False, "mounting Docker socket is not allowed"
+
+    # Container User: reject empty/root/0
+    container_user = data.get("User", "").strip()
+    if container_user in ("", "root", "0", "0:0"):
+        # Allow images that set USER explicitly via Dockerfile,
+        # but reject explicit root requests at container create time
+        if container_user in ("root", "0", "0:0"):
+            return False, f"container user {container_user!r} not allowed"
 
     return True, ""
 
@@ -118,11 +150,36 @@ def handle(client, upstream_path, user):
             method = parts[0] if parts else ""
             path = parts[1] if len(parts) > 1 else ""
 
-            # Parse content-length
+            # Reject smuggling vectors: Transfer-Encoding and duplicate Content-Length
+            cl_count = 0
             content_length = 0
             for line in hdr.split("\r\n"):
-                if line.lower().startswith("content-length:"):
+                low = line.lower()
+                if low.startswith("transfer-encoding:"):
+                    err = json.dumps({"message": "isolator: Transfer-Encoding not allowed"})
+                    resp = (
+                        f"HTTP/1.1 400 Bad Request\r\n"
+                        f"Content-Type: application/json\r\n"
+                        f"Content-Length: {len(err)}\r\n"
+                        f"Connection: close\r\n\r\n{err}"
+                    ).encode()
+                    client.sendall(resp)
+                    log(user, "BLOCKED: Transfer-Encoding (smuggling)")
+                    return
+                if low.startswith("content-length:"):
+                    cl_count += 1
                     content_length = int(line.split(":", 1)[1].strip())
+            if cl_count > 1:
+                err = json.dumps({"message": "isolator: duplicate Content-Length"})
+                resp = (
+                    f"HTTP/1.1 400 Bad Request\r\n"
+                    f"Content-Type: application/json\r\n"
+                    f"Content-Length: {len(err)}\r\n"
+                    f"Connection: close\r\n\r\n{err}"
+                ).encode()
+                client.sendall(resp)
+                log(user, "BLOCKED: duplicate Content-Length (smuggling)")
+                return
 
             # Read body
             body = after_hdr[:content_length]

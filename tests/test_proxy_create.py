@@ -33,11 +33,12 @@ class TestCheckCreate(unittest.TestCase):
             "acm")
         self.assertTrue(ok)
 
-    def test_allowed_tmp_bind(self):
+    def test_blocked_tmp_bind(self):
+        # /tmp shared between sandbox users — disallowed
         ok, _ = check_create(
             self._make_request(Binds=["/tmp/cache:/cache:ro"]),
             "acm")
-        self.assertTrue(ok)
+        self.assertFalse(ok)
 
     def test_allowed_named_volume(self):
         ok, _ = check_create(
@@ -75,7 +76,7 @@ class TestCheckCreate(unittest.TestCase):
             self._make_request(Privileged=True),
             "acm")
         self.assertFalse(ok)
-        self.assertIn("privileged", reason)
+        self.assertIn("Privileged", reason)
 
     def test_blocked_host_network(self):
         ok, reason = check_create(
@@ -96,14 +97,14 @@ class TestCheckCreate(unittest.TestCase):
             self._make_request(VolumesFrom=["other_container"]),
             "acm")
         self.assertFalse(ok)
-        self.assertIn("volumes-from", reason)
+        self.assertIn("VolumesFrom", reason)
 
     def test_blocked_devices(self):
         ok, reason = check_create(
             self._make_request(Devices=[{"PathOnHost": "/dev/sda"}]),
             "acm")
         self.assertFalse(ok)
-        self.assertIn("device", reason)
+        self.assertIn("Devices", reason)
 
     def test_blocked_docker_socket_mount(self):
         ok, reason = check_create(
@@ -154,11 +155,61 @@ class TestCheckCreate(unittest.TestCase):
             "acm")
         self.assertTrue(ok)
 
-    def test_custom_network_allowed(self):
+    def test_iso_user_network_allowed(self):
         ok, _ = check_create(
             self._make_request(NetworkMode="iso-acm"),
             "acm")
         self.assertTrue(ok)
+
+    def test_iso_other_user_network_blocked(self):
+        # acm cannot use click's network
+        ok, _ = check_create(
+            self._make_request(NetworkMode="iso-click"),
+            "acm")
+        self.assertFalse(ok)
+
+    def test_custom_network_blocked(self):
+        ok, _ = check_create(
+            self._make_request(NetworkMode="my-network"),
+            "acm")
+        self.assertFalse(ok)
+
+    def test_blocked_capadd(self):
+        ok, reason = check_create(
+            self._make_request(CapAdd=["SYS_ADMIN"]),
+            "acm")
+        self.assertFalse(ok)
+        self.assertIn("CapAdd", reason)
+
+    def test_blocked_security_opt(self):
+        ok, reason = check_create(
+            self._make_request(SecurityOpt=["seccomp=unconfined"]),
+            "acm")
+        self.assertFalse(ok)
+        self.assertIn("SecurityOpt", reason)
+
+    def test_blocked_ipc_host(self):
+        ok, reason = check_create(
+            self._make_request(IpcMode="host"),
+            "acm")
+        self.assertFalse(ok)
+        self.assertIn("IpcMode", reason)
+
+    def test_blocked_userns_host(self):
+        ok, reason = check_create(
+            self._make_request(UsernsMode="host"),
+            "acm")
+        self.assertFalse(ok)
+        self.assertIn("UsernsMode", reason)
+
+    def test_blocked_explicit_root_user(self):
+        body = json.dumps({
+            "Image": "alpine",
+            "User": "root",
+            "HostConfig": {},
+        }).encode()
+        ok, _ = check_create(body, "acm")
+        self.assertFalse(ok)
 
 
 if __name__ == "__main__":

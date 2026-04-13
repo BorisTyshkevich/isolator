@@ -23,11 +23,15 @@ class TestPathAllowed(unittest.TestCase):
     def test_workspace_subdir(self):
         self.assertTrue(is_path_allowed("/Users/Workspaces/acm/project/src", "acm"))
 
-    def test_tmp(self):
-        self.assertTrue(is_path_allowed("/tmp", "acm"))
+    def test_tmp_blocked(self):
+        # /tmp is shared among sandbox users → not allowed
+        self.assertFalse(is_path_allowed("/tmp", "acm"))
 
-    def test_tmp_subdir(self):
-        self.assertTrue(is_path_allowed("/tmp/build-cache/layer1", "acm"))
+    def test_tmp_subdir_blocked(self):
+        self.assertFalse(is_path_allowed("/tmp/build-cache/layer1", "acm"))
+
+    def test_private_tmp_blocked(self):
+        self.assertFalse(is_path_allowed("/private/tmp/foo", "acm"))
 
     def test_admin_home_blocked(self):
         self.assertFalse(is_path_allowed("/Users/bvt", "acm"))

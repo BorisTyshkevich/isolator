@@ -8,7 +8,7 @@
     <array>
         <string>/bin/bash</string>
         <string>-c</string>
-        <string>target=$(readlink /var/run/docker.sock 2>/dev/null); if [ -n "$target" ] &amp;&amp; [ -S "$target" ]; then rm -f /var/run/docker.sock; ln "$target" /var/run/docker.sock; chmod 770 /var/run/docker.sock; fi</string>
+        <string>target=$(readlink /var/run/docker.sock 2>/dev/null); if [ -n "$target" ] &amp;&amp; [ -S "$target" ]; then rm -f /var/run/docker.sock; ln "$target" /var/run/docker.sock; chown root:wheel /var/run/docker.sock; chmod 600 /var/run/docker.sock; fi</string>
     </array>
     <key>RunAtLoad</key>
     <true/>

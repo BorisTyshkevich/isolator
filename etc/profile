@@ -24,7 +24,7 @@ export PIP_USER=1
 export PYTHONUSERBASE="$HOME/.local"
 
 # Docker — per-user proxy socket (restricts volume mounts)
-DOCKER_PROXY_SOCK="/tmp/isolator-docker/$(whoami).sock"
+DOCKER_PROXY_SOCK="/var/run/isolator-docker/$(whoami).sock"
 if [[ -S "$DOCKER_PROXY_SOCK" ]]; then
     export DOCKER_HOST="unix://$DOCKER_PROXY_SOCK"
 fi
