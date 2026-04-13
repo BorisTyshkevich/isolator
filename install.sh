@@ -32,23 +32,7 @@ cp "$SCRIPT_DIR/etc/open-browser" /etc/isolator/open-browser
 chmod 644 /etc/isolator/profile /etc/isolator/CLAUDE.md
 chmod 755 /etc/isolator/open-browser
 
-# URL opener helper (for SSH sessions to open browser via admin's GUI)
-cat > /etc/isolator/open-url << 'OPENURL'
-#!/bin/bash
-URL="$1"
-[[ -z "$URL" ]] && exit 1
-[[ "$URL" != http* ]] && exit 1
-exec open -a "Google Chrome" "$URL"
-OPENURL
-chmod 755 /etc/isolator/open-url
-
-# Fix admin name in open-browser
-sed -i '' "s/sudo -u bvt/sudo -u $ADMIN/" /etc/isolator/open-browser
-
-# Sudoers rule: sandbox users can open URLs via admin's GUI session
-echo "ALL ALL=($ADMIN) NOPASSWD: /etc/isolator/open-url *" > /etc/sudoers.d/isolator-open-url
-chmod 440 /etc/sudoers.d/isolator-open-url
-ok "Browser URL opener configured"
+ok "Browser opener configured"
 
 # Config — only copy if not exists (don't overwrite user's config)
 if [[ ! -f /etc/isolator/config.toml ]]; then

@@ -1,17 +1,2 @@
 #!/bin/bash
-# Open URL in Chrome. Works from SSH sessions via sudoers rule.
-URL="$1"
-[[ -z "$URL" ]] && exit 0
-
-# Try direct open (works if we have GUI access)
-open -a "Google Chrome" "$URL" 2>/dev/null && exit 0
-
-# SSH fallback: run as admin who has GUI session
-# Sudoers rule: ALL ALL=(bvt) NOPASSWD: /etc/isolator/open-url *
-sudo -u bvt /etc/isolator/open-url "$URL" 2>/dev/null && exit 0
-
-# Last resort: print the URL
-echo ""
-echo "  Open this URL in your browser:"
-echo "  $URL"
-echo ""
+exec open -a "Google Chrome" "$@"
