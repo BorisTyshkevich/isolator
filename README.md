@@ -29,30 +29,25 @@ No third-party Python packages needed — stdlib only.
 ## Quick start
 
 ```bash
-# 1. Install config and profile
-sudo mkdir -p /etc/isolator
-sudo cp etc/config.toml /etc/isolator/config.toml
-sudo cp etc/profile /etc/isolator/profile
-sudo cp etc/CLAUDE.md /etc/isolator/CLAUDE.md
-sudo chmod 600 /etc/isolator/config.toml                       # root-only (has auth paths)
-sudo chmod 644 /etc/isolator/profile /etc/isolator/CLAUDE.md   # readable by all
+# 1. Clone and install
+git clone https://github.com/BorisTyshkevich/isolator.git
+cd isolator
+sudo ./install.sh
 
-# 2. Edit config.toml — set your admin username
+# 2. Edit config — set your admin username and hosts
+sudo vi /etc/isolator/config.toml
 
 # 3. Enable Remote Login (for SSH-based isolation)
 #    System Settings → General → Sharing → Remote Login → ON
 
-# 4. Install iso to PATH
-sudo cp bin/iso /usr/local/bin/iso
-
-# 5. Create users (auto-added to config.toml if not present)
+# 4. Create sandbox users
 iso create acm --keychain
 iso create click --keychain
 
-# 6. Load firewall rules (optional)
+# 5. Apply firewall rules (optional)
 iso pf
 
-# 7. Run (uses SSH under the hood — proper macOS login session)
+# 6. Run
 iso acm claude
 iso click codex
 ```
