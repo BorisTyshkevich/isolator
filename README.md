@@ -41,15 +41,15 @@ sudo vi /etc/isolator/config.toml
 #    System Settings → General → Sharing → Remote Login → ON
 
 # 4. Create sandbox users
-iso create acm --keychain
-iso create click --keychain
+iso create acm
+iso create click
 
-# 5. Apply firewall rules (optional)
+# 5. Authenticate (first run only — stores in macOS keychain)
+iso acm claude        # /login → authenticate → done
+iso click claude      # same
+
+# 6. Apply firewall rules (optional)
 iso pf
-
-# 6. Run
-iso acm claude
-iso click codex
 ```
 
 ## The `iso` command
@@ -100,30 +100,14 @@ iso acm remote --stop            # stop the session
 ### Create options
 
 ```bash
-iso create acm                              # create (no auth)
-iso create acm --keychain                   # with keychain auth (encrypted)
-iso create acm --token sk-ant-oat01-...     # with token auth (plaintext)
+iso create acm                              # create user
 iso create acm --from click                 # copy config from another user
-iso create --all --keychain                 # create all from config
+iso create --all                            # create all from config
 ```
 
 If the user doesn't exist in `config.toml`, it's auto-added with the next available UID.
 
-### Re-running create (refresh)
-
-`iso create` is idempotent — safe to re-run on existing users. It overwrites config files but preserves the user account and home contents.
-
-**Refresh config only** (shell rc, Claude/Codex settings, plugins):
-```bash
-iso create acm
-```
-Re-copies shell config, Claude settings, Codex config, and plugins from the source user. Useful after changing your `.bashrc`, Claude plugins, MCP servers, etc. Does not touch auth — existing keychain stays as-is.
-
-**Refresh config + auth** (also re-copies credentials):
-```bash
-iso create acm --keychain
-```
-Same as above, plus re-copies your current OAuth credentials from keychain with a new secure password. Use after token rotation or when the agent gets 401 errors.
+`iso create` is idempotent — safe to re-run. It overwrites config files but preserves the user account, home contents, and auth.
 
 ### What `create` does
 
@@ -131,58 +115,27 @@ Same as above, plus re-copies your current OAuth credentials from keychain with 
 2. Sets up home with `chmod 700` and ACL for admin read/write access
 3. Detects source user's shell (bash/zsh) and copies the matching rc files
 4. Copies Claude Code config and curated Codex config from the source user
-5. Injects auth — only if `--keychain-pass` or `--token` is provided
-6. Normalizes shared-tool permissions for Homebrew `codex`
+5. Creates per-user Docker network and workspace
+6. Sets up SSH key for passwordless access
 7. Makes config files root-owned and read-only (agent can't modify)
 
 ## Authentication
 
-Two auth modes, both passed at create time.
+### Claude Code
 
-### Mode 1: Keychain (recommended)
-
-Copies Claude Code OAuth credentials from your macOS Keychain into a new encrypted keychain for the isolated user.
+Claude Code manages its own auth via macOS keychain. On first run:
 
 ```bash
-iso create acm --keychain
+iso acm claude      # → /login → authenticate in browser → done
 ```
 
-How it works:
-1. Reads `Claude Code-credentials` from your keychain
-2. Generates a secure random password (stored in `/etc/isolator/keychain/<user>`, root-only mode 400)
-3. Creates a login keychain for the user with that password
-4. Stores the credential there
-5. On `iso acm claude`, the `iso` script reads the root-only password and unlocks the keychain before launching
+Claude Code stores the token in the macOS keychain with an ACL that only allows Claude Code to read it. The agent **cannot** extract the raw token — it can only use it through Claude Code's authenticated session. Combined with network isolation (pf), the token can't be exfiltrated.
 
-The agent never sees the keychain password. Credentials are encrypted at rest. The `iso` script (via sudo) is the only thing that can unlock the keychain.
+Re-authentication: if the token expires, just `/login` again.
 
-### Mode 2: OAuth token
+### Other API keys (OPENAI_API_KEY, etc.)
 
-```bash
-# Generate token (run once as yourself)
-claude setup-token
-# Creates a 1-year token, prints: sk-ant-oat01-...
-
-# Create user with the token
-iso create acm --token sk-ant-oat01-...
-```
-
-Writes the token to `~/.claude/.credentials.json` (plaintext). Simpler but less secure — the agent can read the raw token from disk.
-
-### Mode comparison
-
-| | Keychain | Token |
-|---|---|---|
-| Credentials stored in | macOS Keychain (encrypted) | `.credentials.json` (plaintext) |
-| Password stored in | `/etc/isolator/keychain/` (root 400) | N/A |
-| Survives token refresh | Yes (Claude updates keychain) | No (need new token) |
-| Agent can read raw token | Only while keychain is unlocked | Always |
-| Encrypted at rest | Yes | No |
-| Setup | One command | `claude setup-token` first |
-
-### Config key files (for any env var)
-
-For API keys that aren't Claude OAuth (e.g., `OPENAI_API_KEY`), define them in `config.toml`:
+For non-Claude API keys, define them in `config.toml`:
 
 ```toml
 [users.click.auth]
@@ -196,21 +149,11 @@ echo "sk-..." | sudo tee /etc/isolator/keys/openai > /dev/null
 sudo chmod 400 /etc/isolator/keys/openai
 ```
 
-On `iso create`, each key is read and written to `~/.env` (root-owned, read-only 444). The profile sources `~/.env` on login. This works for any environment variable — `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `HF_TOKEN`, etc.
-
-Config key files are **always** processed, regardless of `--keychain` or `--token`. So a user can have Claude auth via keychain AND an OpenAI key via config:
-
-```bash
-iso create click --keychain       # Claude via keychain + OPENAI_API_KEY from config
-```
+On `iso create`, each key is read and written to `~/.env` (root-owned, read-only 444). The profile sources `~/.env` on login.
 
 ### Codex
 
-Codex auth is handled by copying a curated subset of the source user's `~/.codex`:
-
-- `config.toml` — with source-user `[projects."..."]` trust entries removed, bypass mode enabled
-- `auth.json` — Codex login state
-- `plugins/`, `skills/`, `agents/`, `AGENTS.md`
+Codex auth is handled by copying `~/.codex/auth.json` from the source user. Config is sanitized: project trust entries removed, bypass mode enabled.
 
 ## SSH mode
 
