@@ -937,14 +937,17 @@ def ensure_docker_proxy(user):
     # Check if already running (verify pid belongs to docker-proxy)
     if pid_file.exists():
         try:
-            pid = int(pid_file.read_text().strip())
+            # PID file is root-owned (created via sudo tee), read via sudo
+            r = subprocess.run(["sudo", "cat", str(pid_file)],
+                               capture_output=True, text=True)
+            pid = int(r.stdout.strip())
             r = subprocess.run(["ps", "-p", str(pid), "-o", "command="],
                                capture_output=True, text=True)
             if "docker-proxy" in r.stdout:
                 return  # already running
         except (ValueError, OSError):
             pass
-        pid_file.unlink(missing_ok=True)
+        subprocess.run(["sudo", "rm", "-f", str(pid_file)], capture_output=True)
 
     # Find upstream Docker socket — use OrbStack socket directly,
     # NOT /var/run/docker.sock (which would be accessible to sandbox users)
@@ -1020,9 +1023,11 @@ def cmd_remote(user, args):
         if not pid_file.exists():
             print(f"No remote session for {user}")
             return
+        r = subprocess.run(["sudo", "cat", str(pid_file)],
+                           capture_output=True, text=True)
         try:
-            pid = int(pid_file.read_text().strip())
-        except (ValueError, OSError):
+            pid = int(r.stdout.strip())
+        except ValueError:
             print(f"Invalid pid file for {user}")
             return
         # Verify the PID belongs to our user (prevent killing arbitrary process)
@@ -1042,13 +1047,20 @@ def cmd_remote(user, args):
         if not pid_file.exists():
             print(f"No remote session for {user}")
             return
-        pid = int(pid_file.read_text().strip())
+        # PID file is root-owned (dir is 700)
+        r = subprocess.run(["sudo", "cat", str(pid_file)],
+                           capture_output=True, text=True)
+        try:
+            pid = int(r.stdout.strip())
+        except ValueError:
+            print(f"Invalid pid file for {user}")
+            return
         r = subprocess.run(["ps", "-p", str(pid)], capture_output=True)
         if r.returncode == 0:
             print(f"Remote session for {user}: running (pid {pid})")
         else:
             print(f"Remote session for {user}: not running (stale pid file)")
-            pid_file.unlink(missing_ok=True)
+            subprocess.run(["sudo", "rm", "-f", str(pid_file)], capture_output=True)
         return
 
     bg = "--bg" in args
