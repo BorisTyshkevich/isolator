@@ -908,15 +908,22 @@ section.lead p {
 <ul>
 <li>shell config (<code>.bashrc</code>, <code>.bash_profile</code>)</li>
 <li>Claude/Codex config (settings, MCP servers, plugins)</li>
-<li>Claude/Codex auth (from keychain or API KEY)</li>
+<li>SSH key for opt-in <code>iso -s</code> mode</li>
 </ul>
-<p>Also grants read/write access for <code>main</code> user to sandbox</p>
+<p>Also grants read/write access for admin to sandbox via ACL.</p>
+<p><strong><code>iso &lt;user&gt; &lt;cmd&gt;</code></strong> -- runs command via <code>sudo -u &lt;user&gt; -i</code>:</p>
+<ul>
+<li>Inherits admin's GUI session — <code>open</code>, Chrome, browser auth all work</li>
+<li><code>iso -s &lt;user&gt;</code> for SSH mode (proper login session, no GUI)</li>
+</ul>
 <p><strong><code>iso pf</code></strong> -- generates per-user firewall rules:</p>
 <ul>
 <li>Resolves hostnames to IPs from config</li>
 <li>Each user gets their own allowlist</li>
 <li>Kernel-level enforcement by UID</li>
 </ul>
+<p><strong>Auth:</strong> first run of <code>iso &lt;user&gt; claude</code> → <code>/login</code> in browser → token<br />
+stored in user's macOS keychain with ACL (only Claude can read it).</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="10" data-paginate="true" data-background-color="#ffffff" data-color="#1d1d1f" data-theme="default" data-style="section {
   font-family: 'SF Pro Display', 'Helvetica Neue', sans-serif;

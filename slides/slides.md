@@ -178,14 +178,21 @@ Each sandbox user:
 **`iso create <name>`** -- creates a macOS user by copying your:
 - shell config (`.bashrc`, `.bash_profile`)
 - Claude/Codex config (settings, MCP servers, plugins)
-- Claude/Codex auth (from keychain or API KEY)
+- SSH key for opt-in `iso -s` mode
 
-Also grants read/write access for `main` user to sandbox
+Also grants read/write access for admin to sandbox via ACL.
+
+**`iso <user> <cmd>`** -- runs command via `sudo -u <user> -i`:
+- Inherits admin's GUI session — `open`, Chrome, browser auth all work
+- `iso -s <user>` for SSH mode (proper login session, no GUI)
 
 **`iso pf`** -- generates per-user firewall rules:
 - Resolves hostnames to IPs from config
 - Each user gets their own allowlist
 - Kernel-level enforcement by UID
+
+**Auth:** first run of `iso <user> claude` → `/login` in browser → token
+stored in user's macOS keychain with ACL (only Claude can read it).
 
 ---
 
