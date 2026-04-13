@@ -31,10 +31,26 @@ class TestEndpointAllowlist(unittest.TestCase):
 
     def test_image_pull(self):
         self.assertTrue(is_endpoint_allowed("POST", "/v1.51/images/create?fromImage=alpine"))
-        self.assertTrue(is_endpoint_allowed("GET", "/v1.51/images/json"))
+        self.assertTrue(is_endpoint_allowed("GET", "/v1.51/images/alpine/json"))
+
+    def test_blocked_global_metadata(self):
+        self.assertFalse(is_endpoint_allowed("GET", "/v1.51/info"))
+        self.assertFalse(is_endpoint_allowed("GET", "/v1.51/images/json"))
+        self.assertFalse(is_endpoint_allowed("GET", "/v1.51/system/df"))
 
     def test_build(self):
-        self.assertTrue(is_endpoint_allowed("POST", "/v1.51/build"))
+        self.assertFalse(is_endpoint_allowed("POST", "/v1.51/build"))
+
+    def test_blocked_image_from_src(self):
+        self.assertFalse(
+            is_endpoint_allowed("POST", "/v1.51/images/create?fromSrc=https://evil.example/payload.tar")
+        )
+
+    def test_blocked_image_push(self):
+        self.assertFalse(is_endpoint_allowed("POST", "/v1.51/images/evil/push"))
+
+    def test_blocked_image_unknown_query_mode(self):
+        self.assertFalse(is_endpoint_allowed("POST", "/v1.51/images/create?repo=alpine"))
 
     def test_iso_user_network(self):
         self.assertTrue(is_endpoint_allowed("GET", "/v1.51/networks/iso-acm", "acm"))
@@ -43,6 +59,9 @@ class TestEndpointAllowlist(unittest.TestCase):
     def test_blocked_networks_create(self):
         # Agent could create unrestricted network — block /networks/create
         self.assertFalse(is_endpoint_allowed("POST", "/v1.51/networks/create"))
+
+    def test_blocked_volumes_create(self):
+        self.assertFalse(is_endpoint_allowed("POST", "/v1.51/volumes/create"))
 
     def test_blocked_other_user_network(self):
         self.assertFalse(is_endpoint_allowed("GET", "/v1.51/networks/iso-click", "acm"))

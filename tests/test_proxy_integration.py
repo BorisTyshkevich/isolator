@@ -29,6 +29,7 @@ class TestProxyIntegration(unittest.TestCase):
         cls.upstream_server.listen(16)
         cls.mock_thread = Thread(target=cls._run_mock_upstream, daemon=True)
         cls.mock_thread.start()
+        cls.last_create_body = None
 
         # Start proxy with --insecure-skip-checks (test runs as non-root in tempdir)
         proxy_script = str(Path(__file__).parent.parent / "bin" / "docker-proxy")
@@ -66,24 +67,81 @@ class TestProxyIntegration(unittest.TestCase):
                     return
                 buf += chunk
 
-            # Parse content-length to consume body
-            hdr = buf[:buf.index(b"\r\n\r\n") + 4].decode()
+            hdr_end = buf.index(b"\r\n\r\n") + 4
+            hdr = buf[:hdr_end].decode()
+            request_line = hdr.split("\r\n", 1)[0]
+            method, path, _ = request_line.split(" ", 2)
             cl = 0
             for line in hdr.split("\r\n"):
                 if line.lower().startswith("content-length:"):
                     cl = int(line.split(":", 1)[1].strip())
-            body_start = buf[buf.index(b"\r\n\r\n") + 4:]
+            body_start = buf[hdr_end:]
             remaining = cl - len(body_start)
+            body = body_start
             while remaining > 0:
                 chunk = client.recv(min(remaining, 8192))
                 if not chunk:
                     break
+                body += chunk
                 remaining -= len(chunk)
 
-            # Respond with a fake container ID
-            resp_body = json.dumps({"Id": "abc123", "Warnings": []})
+            if method == "POST" and path == "/v1.51/containers/create":
+                cls.last_create_body = body.decode("utf-8")
+                resp_body = json.dumps({"Id": "abc123", "Warnings": []})
+                status = "201 Created"
+            elif method == "GET" and path == "/v1.51/containers/json":
+                resp_body = json.dumps([
+                    {"Id": "abc123", "Labels": {"dev.boris.isolator.user": "testuser"}},
+                    {"Id": "victim999", "Labels": {"dev.boris.isolator.user": "other"}},
+                ])
+                status = "200 OK"
+            elif method == "GET" and path == "/v1.51/containers/abc123/json":
+                payload = json.dumps({
+                    "Id": "abc123",
+                    "Config": {"Labels": {"dev.boris.isolator.user": "testuser"}},
+                }).encode()
+                chunks = [
+                    f"{len(payload):X}\r\n".encode(),
+                    payload,
+                    b"\r\n0\r\n\r\n",
+                ]
+                resp = (
+                    b"HTTP/1.1 200 OK\r\n"
+                    b"Content-Type: application/json\r\n"
+                    b"Transfer-Encoding: chunked\r\n"
+                    b"\r\n" + b"".join(chunks)
+                )
+                client.sendall(resp)
+                return
+            elif method == "GET" and path == "/v1.51/containers/victim999/json":
+                payload = json.dumps({
+                    "Id": "victim999",
+                    "Config": {"Labels": {"dev.boris.isolator.user": "other"}},
+                }).encode()
+                chunks = [
+                    f"{len(payload):X}\r\n".encode(),
+                    payload,
+                    b"\r\n0\r\n\r\n",
+                ]
+                resp = (
+                    b"HTTP/1.1 200 OK\r\n"
+                    b"Content-Type: application/json\r\n"
+                    b"Transfer-Encoding: chunked\r\n"
+                    b"\r\n" + b"".join(chunks)
+                )
+                client.sendall(resp)
+                return
+            elif method == "GET" and path == "/v1.51/exec/exec-owned/json":
+                resp_body = json.dumps({"ID": "exec-owned", "ContainerID": "abc123"})
+                status = "200 OK"
+            elif method == "GET" and path == "/v1.51/exec/exec-other/json":
+                resp_body = json.dumps({"ID": "exec-other", "ContainerID": "victim999"})
+                status = "200 OK"
+            else:
+                resp_body = json.dumps({"Id": "abc123", "Warnings": []})
+                status = "200 OK"
             resp = (
-                f"HTTP/1.1 201 Created\r\n"
+                f"HTTP/1.1 {status}\r\n"
                 f"Content-Type: application/json\r\n"
                 f"Content-Length: {len(resp_body)}\r\n"
                 f"\r\n{resp_body}"
@@ -139,6 +197,7 @@ class TestProxyIntegration(unittest.TestCase):
         resp = self._send_create({"Binds": ["/Users/Workspaces/testuser/src:/app"]})
         self.assertIn("201", resp)
         self.assertIn("abc123", resp)
+        self.assertIn('"dev.boris.isolator.user": "testuser"', self.last_create_body)
 
     def test_blocked_returns_403(self):
         resp = self._send_create({"Binds": ["/Users/bvt/.ssh:/mnt"]})
@@ -178,6 +237,105 @@ class TestProxyIntegration(unittest.TestCase):
             pass
         s.close()
         self.assertIn(b"HTTP/1.1", resp)
+
+    def test_blocked_build_returns_403(self):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.connect(self.proxy_sock)
+        s.settimeout(5)
+        s.sendall(
+            b"POST /v1.51/build HTTP/1.1\r\n"
+            b"Host: docker\r\n"
+            b"Content-Length: 0\r\n"
+            b"Connection: close\r\n\r\n"
+        )
+        resp = b""
+        try:
+            while True:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                resp += chunk
+        except socket.timeout:
+            pass
+        s.close()
+        self.assertIn(b"403", resp)
+
+    def test_container_list_filtered_to_owned(self):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.connect(self.proxy_sock)
+        s.settimeout(5)
+        s.sendall(b"GET /v1.51/containers/json HTTP/1.1\r\nHost: docker\r\nConnection: close\r\n\r\n")
+        resp = b""
+        try:
+            while True:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                resp += chunk
+        except socket.timeout:
+            pass
+        s.close()
+        decoded = resp.decode("utf-8", errors="replace")
+        self.assertIn("abc123", decoded)
+        self.assertNotIn("victim999", decoded)
+        hdr, body = decoded.split("\r\n\r\n", 1)
+        self.assertIn("Content-Length", hdr)
+        self.assertTrue(body.startswith("["), repr(body[:20]))
+        parsed = json.loads(body)
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0]["Id"], "abc123")
+
+    def test_owned_container_start_allowed(self):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.connect(self.proxy_sock)
+        s.settimeout(5)
+        s.sendall(b"POST /v1.51/containers/abc123/start HTTP/1.1\r\nHost: docker\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        resp = b""
+        try:
+            while True:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                resp += chunk
+        except socket.timeout:
+            pass
+        s.close()
+        self.assertNotIn(b"403", resp)
+        self.assertIn(b"HTTP/1.1 200 OK", resp)
+
+    def test_other_container_inspect_blocked(self):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.connect(self.proxy_sock)
+        s.settimeout(5)
+        s.sendall(b"GET /v1.51/containers/victim999/json HTTP/1.1\r\nHost: docker\r\nConnection: close\r\n\r\n")
+        resp = b""
+        try:
+            while True:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                resp += chunk
+        except socket.timeout:
+            pass
+        s.close()
+        self.assertIn(b"403", resp)
+
+    def test_other_exec_blocked(self):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.connect(self.proxy_sock)
+        s.settimeout(5)
+        s.sendall(b"POST /v1.51/exec/exec-other/start HTTP/1.1\r\nHost: docker\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        resp = b""
+        try:
+            while True:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                resp += chunk
+        except socket.timeout:
+            pass
+        s.close()
+        self.assertIn(b"403", resp)
 
 
 if __name__ == "__main__":

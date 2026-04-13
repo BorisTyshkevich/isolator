@@ -29,7 +29,6 @@ We create **per-user Docker networks** with **iptables egress rules** inside the
 2. `iso pf` generates iptables rules in the `DOCKER-USER` chain inside the OrbStack VM
 3. Container traffic from that subnet is restricted to:
    - Other containers on the same network (container-to-container)
-   - DNS (UDP port 53)
    - Whitelisted IPs from `config.toml` (same hosts list as pf)
 4. All other egress is dropped
 
@@ -38,7 +37,6 @@ We create **per-user Docker networks** with **iptables egress rules** inside the
 ```
 # Per-user rules
 ACCEPT  all  172.30.0.0/24 → 172.30.0.0/24     (container-to-container)
-ACCEPT  udp  172.30.0.0/24 → 0.0.0.0/0 :53     (DNS)
 ACCEPT  tcp  172.30.0.0/24 → <allowed-ips> :443 (whitelisted hosts)
 DROP    all  172.30.0.0/24 → 0.0.0.0/0          (block everything else)
 
@@ -115,8 +113,8 @@ networks:
 - Rules are applied to the Docker VM, not to macOS. If the Docker VM is restarted,
   rules are lost. Re-run `iso pf` after OrbStack restart.
 - The `nsenter` approach requires the `nicolaka/netshoot` image (pulled automatically).
-- Container DNS resolution works, but the resolved IPs may not be in the whitelist.
-  Use IP-based whitelisting or pre-resolve in `iso pf`.
+- Container DNS egress is blocked. Allowed container traffic is IP-based only,
+  using hostnames pre-resolved by `iso pf` into allowlisted destination IPs.
 
 ## Docker socket proxy (per-user)
 
@@ -127,12 +125,14 @@ chmod 700 home — sandbox users can't traverse).
 
 The proxy enforces (in `bin/docker-proxy`):
 - Bind mounts: only `/Users/Workspaces/<user>/` (paths rewritten via realpath)
+- Named volumes: blocked entirely, including local-driver bind tricks
 - NetworkMode: only `bridge` or `iso-<user>`
 - Rejects: `Privileged`, `--net=host`, `--pid=host`, `--volumes-from`, `--device`,
   `CapAdd`, `SecurityOpt`, `IpcMode`, `UTSMode`, `UsernsMode`, `CgroupnsMode`,
   `CgroupParent`, `Runtime`, `Sysctls`, `Ulimits`, `OomScoreAdj`, `OomKillDisable`,
   `DeviceCgroupRules`, `DeviceRequests`, explicit User=root
 - Rejects: `Transfer-Encoding` and duplicate `Content-Length` (HTTP smuggling)
+- Exposes only a strict daemon endpoint allowlist: normal image pull/list/inspect and container lifecycle operations; blocks volume creation, build, image push/import, and daemon-side remote fetch (`fromSrc`)
 
 There is **no `/var/run/docker.sock` hardlink**. Sandbox users only have
 the per-user proxy socket; no fallback path to the real daemon.
@@ -145,8 +145,10 @@ the per-user proxy socket; no fallback path to the real daemon.
 | Agent exfiltrates via Docker container | Docker `iptables` blocks by subnet |
 | Agent uses `--net=host`, `--privileged`, etc. | Proxy rejects dangerous HostConfig |
 | Agent mounts `/Users/admin/.ssh` | Proxy rejects mounts outside workspace |
+| Agent hides host paths inside named volumes | Proxy rejects named volumes and `/volumes/create` |
 | Agent swaps symlink mid-validation (TOCTOU) | Proxy rewrites paths to realpath |
 | Agent creates unrestricted Docker network | NetworkMode allowlist; iptables drops 172.17.0.0/16 |
 | Agent connects directly to docker.sock | No /var/run/docker.sock; OrbStack socket inside admin home |
+| Agent uses Docker daemon for outbound fetch/push | Proxy blocks build/push/import and `images/create?fromSrc=` |
 | Container runtime installs malware | Egress blocked unless host whitelisted |
 | Agent reads other user's containers | Docker namespacing (shared daemon caveat) |

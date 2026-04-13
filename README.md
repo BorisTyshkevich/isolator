@@ -294,9 +294,11 @@ The proxy is auto-started by `iso` on first use (no manual setup). Admin keeps u
 
 **The fix:** per-user proxy filters every `containers/create` request:
 - **Bind mounts**: only `/Users/Workspaces/<user>/` (paths rewritten via `realpath()` for TOCTOU safety)
+- **Named volumes**: blocked entirely (including bind-backed local-driver volumes)
 - **NetworkMode**: only `bridge` or `iso-<user>` (other networks rejected)
 - **Rejected fields**: `Privileged`, `--net=host`, `--pid=host`, `--volumes-from`, `--device`, `CapAdd`, `SecurityOpt`, `IpcMode`, `UTSMode`, `UsernsMode`, `CgroupnsMode`, `CgroupParent`, `Runtime`, `Sysctls`, `Ulimits`, `OomScoreAdj`, `OomKillDisable`, `DeviceCgroupRules`, `DeviceRequests`
 - **Rejected**: explicit `User=root`, `Transfer-Encoding` headers, duplicate `Content-Length` (HTTP smuggling)
+- **Daemon endpoints**: only a narrow allowlist is exposed; proxy-side `docker build`, image push/import, remote `fromSrc` fetches, and volume creation are blocked
 
 Sandboxed users must use `/opt/homebrew/bin/docker` (not the OrbStack shim at `/usr/local/bin/docker`, which bypasses `DOCKER_HOST`).
 
@@ -304,7 +306,13 @@ Sandboxed users must use `/opt/homebrew/bin/docker` (not the OrbStack shim at `/
 # Verify
 iso acm docker run --rm -v /Users/Workspaces/acm:/app alpine echo OK    # allowed
 iso acm docker run --rm -v /Users/admin/.ssh:/mnt alpine cat /mnt/id_rsa # blocked
+iso acm docker volume create secret-bind                                  # blocked
+iso acm docker build .                                                    # blocked through proxy
 ```
+
+### Sandbox user names
+
+`iso` now rejects unsafe sandbox names before any root-owned paths are touched. Valid names are simple local account names using only letters, digits, `_`, `.`, and `-`.
 
 ## Chrome MCP (browser access from sandbox)
 
@@ -388,5 +396,4 @@ orb dmesg | grep "iso-"
 
 **pf logs** — macOS handles `pflog0` as a virtual interface all logs in-RAM rotated automatically.
 **Docker iptables logs** — stored in the OrbStack VM's kernel ring buffer (`dmesg`), which auto-rotates, too. 
-
 

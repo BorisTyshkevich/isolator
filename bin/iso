@@ -31,6 +31,7 @@ Examples:
 
 import json
 import os
+import re
 import shlex
 import shutil
 import socket
@@ -56,7 +57,7 @@ SSH_OPTS = ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/nul
 WORKSPACES_DIR = Path("/Users/Workspaces")
 DOCKER_PROXY_DIR = Path("/var/run/isolator-docker")  # root-only system dir
 REMOTE_PID_DIR_PATH = Path("/var/run/isolator-remote")  # root-only system dir
-DOCKER_PROXY_SCRIPT = Path(__file__).parent / "docker-proxy"
+DOCKER_PROXY_SCRIPT = Path(__file__).resolve().parent / "docker-proxy"
 
 SHELL_RC_FILES = {
     "bash": [".bash_profile", ".bashrc"],
@@ -172,6 +173,24 @@ def copy_path(src, dst):
         shutil.copytree(src, dst, symlinks=True)
     else:
         shutil.copy2(src, dst)
+
+
+VALID_USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+def validate_username(name):
+    """Reject path-like or otherwise unsafe sandbox user names."""
+    if not isinstance(name, str) or not name:
+        raise ValueError("invalid sandbox user name: empty")
+    if name.startswith("-"):
+        raise ValueError(f"invalid sandbox user name {name!r}: cannot start with '-'")
+    if "/" in name or "\\" in name or ".." in name or any(ch.isspace() for ch in name):
+        raise ValueError(f"invalid sandbox user name {name!r}: must be a simple local account name")
+    if not VALID_USERNAME_RE.fullmatch(name):
+        raise ValueError(
+            f"invalid sandbox user name {name!r}: allowed characters are letters, digits, '_', '.', '-'"
+        )
+    return name
 
 
 # ── Create ──────────────────────────────────────────────────────────────────
@@ -650,6 +669,7 @@ def create_docker_network(name, config):
 
 def cmd_create(name, config, from_user=None):
     """Create one isolated user."""
+    name = validate_username(name)
     users = config.get("users", {})
     admin = config["admin"]
 
@@ -701,6 +721,7 @@ def cmd_create(name, config, from_user=None):
 
 def cmd_delete(name):
     """Delete one isolated user and its home directory."""
+    name = validate_username(name)
     home = Path(f"/Users/{name}")
 
     print(f"\n=== Deleting {name} ===")
@@ -841,7 +862,6 @@ def generate_docker_iptables(config):
         ips = resolve_hosts(hosts)
 
         rules.append(f"iptables -A DOCKER-USER-NEW -s {subnet} -d {subnet} -j ACCEPT")
-        rules.append(f"iptables -A DOCKER-USER-NEW -s {subnet} -p udp --dport 53 -j ACCEPT")
         for ip in ips:
             rules.append(f"iptables -A DOCKER-USER-NEW -s {subnet} -d {ip} -p tcp --dport 443 -j ACCEPT")
         if log:
@@ -933,6 +953,7 @@ def ensure_docker_proxy(user):
 
     sock = DOCKER_PROXY_DIR / f"{user}.sock"
     pid_file = DOCKER_PROXY_DIR / f"{user}.pid"
+    log_file = DOCKER_PROXY_DIR / f"{user}.log"
 
     # Check if already running (verify pid belongs to docker-proxy)
     if pid_file.exists():
@@ -943,42 +964,72 @@ def ensure_docker_proxy(user):
             pid = int(r.stdout.strip())
             r = subprocess.run(["ps", "-p", str(pid), "-o", "command="],
                                capture_output=True, text=True)
-            if "docker-proxy" in r.stdout:
-                return  # already running
+            if "docker-proxy" in r.stdout and sock.exists():
+                return "ready"
         except (ValueError, OSError):
             pass
         subprocess.run(["sudo", "rm", "-f", str(pid_file)], capture_output=True)
+        subprocess.run(["sudo", "rm", "-f", str(sock)], capture_output=True)
 
     # Find upstream Docker socket — use OrbStack socket directly,
     # NOT /var/run/docker.sock (which would be accessible to sandbox users)
     admin = get_admin()
     upstream = Path(f"/Users/{admin}/.orbstack/run/docker.sock")
     if not upstream.exists():
-        return  # no Docker / no OrbStack
+        return "unavailable"  # no Docker / no OrbStack
 
-    # Prime sudo auth (Touch ID prompt) before backgrounding the proxy.
-    # Without this, `sudo` in the Popen would need a tty we can't provide.
-    r = subprocess.run(["sudo", "-v"])
+    # Start the proxy in a single sudo invocation so the password prompt and
+    # the privileged launch share the same tty/ticket context.
+    proxy_cmd = " ".join([
+        shlex.quote(sys.executable),
+        shlex.quote(str(DOCKER_PROXY_SCRIPT)),
+        "--user", shlex.quote(user),
+        "--socket", shlex.quote(str(sock)),
+        "--upstream", shlex.quote(str(upstream)),
+    ])
+    subprocess.run(["sudo", "rm", "-f", str(log_file)], capture_output=True)
+    redirect = f" >>{shlex.quote(str(log_file))} 2>&1"
+    launch_cmd = (
+        f"rm -f {shlex.quote(str(sock))} {shlex.quote(str(pid_file))}; "
+        f"nohup {proxy_cmd}{redirect} & echo $! > {shlex.quote(str(pid_file))}"
+    )
+    r = subprocess.run(["sudo", "sh", "-c", launch_cmd], capture_output=True, text=True)
     if r.returncode != 0:
-        print("  WARNING: sudo auth failed — Docker proxy won't start")
-        return
+        print("  WARNING: docker-proxy launch failed")
+        if r.stderr.strip():
+            print(f"           {r.stderr.strip()}")
+        return "failed"
 
-    proc = subprocess.Popen(
-        ["sudo", "-n", sys.executable, str(DOCKER_PROXY_SCRIPT),
-         "--user", user, "--socket", str(sock), "--upstream", str(upstream)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL if not os.environ.get("ISOLATOR_DEBUG") else None,
-        start_new_session=True)
-    # Write pid file via sudo (dir is root-owned)
-    subprocess.run(["sudo", "tee", str(pid_file)],
-                   input=str(proc.pid), text=True, capture_output=True)
+    def read_proxy_log():
+        r = subprocess.run(["sudo", "cat", str(log_file)], capture_output=True, text=True)
+        if r.returncode != 0:
+            return ""
+        return r.stdout.strip()
 
-    # Wait briefly for the socket to appear — profile checks for it
+    # Wait briefly for the socket to appear, but fail fast if the process dies.
     import time
-    for _ in range(30):  # up to 3 seconds
+    for _ in range(10):  # up to 1 second
         if sock.exists():
+            return "ready"
+        try:
+            r = subprocess.run(["sudo", "cat", str(pid_file)], capture_output=True, text=True)
+            pid = int(r.stdout.strip())
+            r = subprocess.run(["ps", "-p", str(pid), "-o", "command="],
+                               capture_output=True, text=True)
+            if "docker-proxy" not in r.stdout:
+                break
+        except (ValueError, OSError):
             break
         time.sleep(0.1)
+
+    log_output = read_proxy_log()
+    subprocess.run(["sudo", "rm", "-f", str(pid_file)], capture_output=True)
+    subprocess.run(["sudo", "rm", "-f", str(sock)], capture_output=True)
+    if log_output:
+        print("  docker-proxy output:")
+        for line in log_output.splitlines()[-10:]:
+            print(f"    {line}")
+    return "failed"
 
 
 def build_ssh_cmd(user, command, extra, args, cwd=None):
@@ -999,10 +1050,16 @@ def build_ssh_cmd(user, command, extra, args, cwd=None):
 
 def cmd_run(user, command, args, use_ssh=False):
     """Run a command as an isolated user. Default: sudo. With -s: SSH."""
-    ensure_docker_proxy(user)
+    user = validate_username(user)
+    docker_status = ensure_docker_proxy(user)
     extra = COMMAND_FLAGS.get(command, [])
     user_ws = WORKSPACES_DIR / user
     cwd = str(user_ws) if user_ws.exists() else None
+
+    if docker_status == "failed":
+        print(f"WARNING: Docker proxy for {user} failed to start.")
+        print(f"         expected socket: {DOCKER_PROXY_DIR / f'{user}.sock'}")
+        print("         shell will start without DOCKER_HOST; fix sudo/OrbStack and retry.")
 
     if use_ssh:
         admin = get_admin()
@@ -1029,11 +1086,13 @@ REMOTE_PID_DIR = REMOTE_PID_DIR_PATH
 
 
 def remote_pid_file(user):
+    user = validate_username(user)
     return REMOTE_PID_DIR / f"{user}.pid"
 
 
 def cmd_remote(user, args):
     """Manage a sandboxed remote Claude session for Claude Desktop."""
+    user = validate_username(user)
     if "--stop" in args:
         pid_file = remote_pid_file(user)
         if not pid_file.exists():
@@ -1230,6 +1289,7 @@ def main():
 
     # ── iso [-s] <user> [command] [args...] ──
     if subcmd not in SUBCOMMANDS and not subcmd.startswith("-"):
+        subcmd = validate_username(subcmd)
         cmd = argv[1] if len(argv) >= 2 else "bash"
         if cmd == "remote":
             cmd_remote(subcmd, argv[2:])

@@ -24,8 +24,9 @@ class TestCheckCreate(unittest.TestCase):
         }).encode()
 
     def test_clean_create(self):
-        ok, _, _ = check_create(self._make_request(), "acm")
+        ok, _, new_body = check_create(self._make_request(), "acm")
         self.assertTrue(ok)
+        self.assertEqual(json.loads(new_body)["Labels"]["dev.boris.isolator.user"], "acm")
 
     def test_allowed_bind(self):
         ok, _, _ = check_create(
@@ -48,10 +49,11 @@ class TestCheckCreate(unittest.TestCase):
         self.assertTrue(ok)
 
     def test_allowed_named_volume(self):
-        ok, _, _ = check_create(
+        ok, reason, _ = check_create(
             self._make_request(Binds=["myvolume:/data"]),
             "acm")
-        self.assertTrue(ok)
+        self.assertFalse(ok)
+        self.assertIn("named volume", reason)
 
     def test_blocked_admin_home(self):
         ok, reason, _ = check_create(
@@ -252,7 +254,18 @@ class TestCheckCreate(unittest.TestCase):
         }).encode()
         ok, reason, _ = check_create(body, "acm")
         self.assertFalse(ok)
-        self.assertIn("DriverConfig.device", reason)
+        self.assertIn("named volumes", reason)
+
+    def test_blocked_mount_type_volume(self):
+        body = json.dumps({
+            "Image": "alpine",
+            "HostConfig": {
+                "Mounts": [{"Type": "volume", "Source": "myvol", "Target": "/data"}]
+            }
+        }).encode()
+        ok, reason, _ = check_create(body, "acm")
+        self.assertFalse(ok)
+        self.assertIn("named volumes", reason)
 
     def test_blocked_unknown_mount_type(self):
         body = json.dumps({

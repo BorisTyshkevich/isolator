@@ -215,7 +215,6 @@ Containers run inside OrbStack's Linux VM — macOS pf doesn't see them. `iso pf
 
 ```
 ACCEPT  172.30.0.0/24 → 172.30.0.0/24       (container-to-container)
-ACCEPT  172.30.0.0/24 → 0.0.0.0/0 :53       (DNS)
 ACCEPT  172.30.0.0/24 → <allowed-ips> :443   (whitelisted hosts)
 DROP    172.30.0.0/24 → 0.0.0.0/0            (everything else)
 ```
@@ -258,7 +257,7 @@ Admin uses Docker via OrbStack context (`~/.orbstack/run/docker.sock`).
 
 Per-user Docker networks with dedicated subnets (172.30.N.0/24). Created by `iso create`, firewalled by `iso pf`.
 
-`docker pull` works (daemon operation). Container egress restricted to same-subnet + DNS + whitelisted hosts.
+`docker pull` works (daemon operation). Container egress restricted to same-subnet + whitelisted IPs only.
 
 Docker socket: hardlink at `/var/run/docker.sock`, re-created by launchd when OrbStack restarts.
 

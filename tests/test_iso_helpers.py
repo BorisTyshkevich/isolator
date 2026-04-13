@@ -55,6 +55,31 @@ class TestIsoHelpers(unittest.TestCase):
         self.assertFalse(ns["should_log"]({"log": False}))
         self.assertFalse(ns["should_log"]({}))
 
+    def test_generate_docker_iptables_blocks_general_dns(self):
+        ns = self._load_iso()
+        config = {
+            "global": {"hosts": ["api.example.com"]},
+            "users": {"acm": {"uid": 600, "hosts": ["api.openai.com"]}},
+        }
+        ns["resolve_hosts"] = lambda hosts: ["1.2.3.4"]
+        rules = ns["generate_docker_iptables"](config)
+        self.assertFalse(any("--dport 53" in rule for rule in rules))
+        self.assertTrue(any("-d 1.2.3.4 -p tcp --dport 443 -j ACCEPT" in rule for rule in rules))
+
+    def test_validate_username_accepts_simple_names(self):
+        ns = self._load_iso()
+        validate = ns["validate_username"]
+        self.assertEqual(validate("acm"), "acm")
+        self.assertEqual(validate("click-1"), "click-1")
+        self.assertEqual(validate("user.name"), "user.name")
+
+    def test_validate_username_rejects_path_like_values(self):
+        ns = self._load_iso()
+        validate = ns["validate_username"]
+        for value in ("../etc", "../../var/db", "/tmp/x", "-bad", "", "bad name", "acm/test"):
+            with self.assertRaises(ValueError, msg=value):
+                validate(value)
+
 
 if __name__ == "__main__":
     unittest.main()

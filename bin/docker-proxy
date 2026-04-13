@@ -9,14 +9,17 @@ After the first streaming endpoint (attach/wait/exec), switches to raw relay.
 import argparse
 import json
 import os
+import re
 import signal
 import socket
 import sys
 import threading
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 WORKSPACES_DIR = "/Users/Workspaces"
 MAX_BODY_SIZE = 16 * 1024 * 1024  # 16 MB — generous for create JSON, blocks OOM
+OWNER_LABEL = "dev.boris.isolator.user"
 
 
 def log(user, msg):
@@ -46,6 +49,16 @@ def is_path_allowed(path, user):
     return False
 
 
+def json_error(status, message):
+    body = json.dumps({"message": f"isolator: {message}"})
+    return (
+        f"HTTP/1.1 {status}\r\n"
+        f"Content-Type: application/json\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        f"Connection: close\r\n\r\n{body}"
+    ).encode()
+
+
 # HostConfig fields we explicitly allow (everything else gets default).
 # Anything dangerous must be explicitly handled in check_create.
 SAFE_HOST_CONFIG_FIELDS = {
@@ -69,30 +82,14 @@ DANGEROUS_HOST_CONFIG = {
     "Links",  # legacy, redundant — disallow
 }
 
-# Default-deny endpoint allowlist. Anything not matching one of these
-# regex patterns is rejected. Matches against just the path (no query).
-import re
-_GENERIC_ENDPOINT_ALLOW = [
-    re.compile(p) for p in [
-        r"^/v[\d.]+/_ping$",
-        r"^/_ping$",
-        r"^/v[\d.]+/version$",
-        r"^/v[\d.]+/info$",
-        r"^/v[\d.]+/containers/json$",  # list
-        r"^/v[\d.]+/containers/create$",  # validated separately
-        r"^/v[\d.]+/containers/[a-zA-Z0-9_.-]+/(start|stop|restart|kill|pause|unpause|wait|attach|logs|inspect|stats|top|changes|export|exec|json)(/.*)?$",
-        r"^/v[\d.]+/containers/[a-zA-Z0-9_.-]+/archive$",
-        r"^/v[\d.]+/containers/[a-zA-Z0-9_.-]+$",  # delete
-        r"^/v[\d.]+/exec/[a-zA-Z0-9_.-]+/(start|resize|json)$",
-        r"^/v[\d.]+/images/.*$",  # pull, list, inspect, delete
-        r"^/v[\d.]+/build$",  # docker build (uploads context tar)
-        r"^/v[\d.]+/networks/json$",
-        r"^/v[\d.]+/networks/bridge(/.*)?$",
-        r"^/v[\d.]+/volumes/.*$",  # named volumes (no host paths)
-        r"^/v[\d.]+/system/df$",
-        r"^/v[\d.]+/system/events$",
-    ]
-]
+_CONTAINER_ACTION_RE = re.compile(
+    r"^/v[\d.]+/containers/[a-zA-Z0-9_.-]+/"
+    r"(start|stop|restart|kill|pause|unpause|wait|attach|logs|inspect|stats|top|changes|export|exec|json)(/.*)?$"
+)
+_CONTAINER_DELETE_RE = re.compile(r"^/v[\d.]+/containers/[a-zA-Z0-9_.-]+$")
+_EXEC_ACTION_RE = re.compile(r"^/v[\d.]+/exec/[a-zA-Z0-9_.-]+/(start|resize|json)$")
+_IMAGE_INSPECT_RE = re.compile(r"^/v[\d.]+/images/[a-zA-Z0-9_.:@/-]+/json$")
+_USER_NETWORK_RE_TEMPLATE = r"^/v[\d.]+/networks/iso-{user}(/.*)?$"
 
 
 def is_endpoint_allowed(method, path, user="acm"):
@@ -101,11 +98,43 @@ def is_endpoint_allowed(method, path, user="acm"):
     Network endpoints restricted to iso-<user> only — other users' networks
     and arbitrary network names are rejected.
     """
-    plain = path.split("?", 1)[0]
-    if any(p.match(plain) for p in _GENERIC_ENDPOINT_ALLOW):
+    parts = urlsplit(path)
+    plain = parts.path
+    query = parse_qs(parts.query, keep_blank_values=True)
+
+    if method == "HEAD" and plain in ("/_ping",) or (
+        method == "GET" and plain in ("/_ping",)
+    ):
+        return True
+    if method == "GET" and re.match(r"^/v[\d.]+/(_ping|version|system/events)$", plain):
+        return True
+    if method == "GET" and plain == "/_ping":
+        return True
+    if method == "GET" and re.match(r"^/v[\d.]+/containers/json$", plain):
+        return True
+    if method == "POST" and re.match(r"^/v[\d.]+/containers/create$", plain):
+        return True
+    if _CONTAINER_ACTION_RE.match(plain):
+        return True
+    if method == "DELETE" and _CONTAINER_DELETE_RE.match(plain):
+        return True
+    if _EXEC_ACTION_RE.match(plain):
+        return True
+    if method == "GET" and _IMAGE_INSPECT_RE.match(plain):
+        return True
+    if method == "POST" and re.match(r"^/v[\d.]+/images/create$", plain):
+        if "fromSrc" in query:
+            return False
+        allowed_keys = {"fromImage", "tag", "platform"}
+        if set(query) - allowed_keys:
+            return False
+        return bool(query.get("fromImage") and query["fromImage"][0])
+    if method == "GET" and re.match(r"^/v[\d.]+/networks/json$", plain):
+        return True
+    if method == "GET" and re.match(r"^/v[\d.]+/networks/bridge(/.*)?$", plain):
         return True
     # User-specific iso network endpoint: /vX/networks/iso-<user> or .../iso-<user>/sub
-    iso_net_re = re.compile(rf"^/v[\d.]+/networks/iso-{re.escape(user)}(/.*)?$")
+    iso_net_re = re.compile(_USER_NETWORK_RE_TEMPLATE.format(user=re.escape(user)))
     if iso_net_re.match(plain):
         return True
     return False
@@ -152,8 +181,7 @@ def check_create(body_bytes, user):
         parts = bind.split(":")
         source = parts[0]
         if not source.startswith("/"):
-            new_binds.append(bind)  # named volume — pass through
-            continue
+            return False, f"named volume {source!r} not allowed", body_bytes
         resolved = resolve_path(source)
         if not is_path_allowed(resolved, user):
             return False, f"bind mount not allowed: {source}", body_bytes
@@ -179,10 +207,7 @@ def check_create(body_bytes, user):
             mount = dict(mount)
             mount["Source"] = resolved
         elif mtype == "volume":
-            # Volume with DriverConfig.Options.device = bind mount in disguise
-            vo = (mount.get("VolumeOptions") or {}).get("DriverConfig") or {}
-            if (vo.get("Options") or {}).get("device"):
-                return False, "volume DriverConfig.device not allowed (bind mount via volume)", body_bytes
+            return False, "named volumes are not allowed", body_bytes
         elif mtype == "tmpfs":
             pass  # tmpfs is fine
         else:
@@ -196,8 +221,200 @@ def check_create(body_bytes, user):
     if container_user in ("root", "0", "0:0"):
         return False, f"container user {container_user!r} not allowed", body_bytes
 
+    labels = dict(data.get("Labels") or {})
+    labels[OWNER_LABEL] = user
+    data["Labels"] = labels
+
     # Re-serialize the (possibly modified) body
     return True, "", json.dumps(data).encode()
+
+
+def decode_chunked_body(body):
+    decoded = bytearray()
+    pos = 0
+    while True:
+        line_end = body.find(b"\r\n", pos)
+        if line_end == -1:
+            raise ValueError("incomplete chunk header")
+        size_line = body[pos:line_end].split(b";", 1)[0]
+        try:
+            size = int(size_line.decode("ascii"), 16)
+        except ValueError as e:
+            raise ValueError("invalid chunk size") from e
+        pos = line_end + 2
+        if size == 0:
+            trailer_end = body.find(b"\r\n\r\n", pos)
+            if trailer_end == -1:
+                if body[pos:pos + 2] == b"\r\n":
+                    return bytes(decoded)
+                raise ValueError("incomplete chunk trailer")
+            return bytes(decoded)
+        if len(body) < pos + size + 2:
+            raise ValueError("incomplete chunk body")
+        decoded.extend(body[pos:pos + size])
+        pos += size
+        if body[pos:pos + 2] != b"\r\n":
+            raise ValueError("invalid chunk terminator")
+        pos += 2
+
+
+def read_http_response(sock, *, decode_chunked=False):
+    resp_buf = b""
+    while b"\r\n\r\n" not in resp_buf:
+        chunk = sock.recv(8192)
+        if not chunk:
+            return b"", "", b"", b""
+        resp_buf += chunk
+
+    resp_hdr_end = resp_buf.index(b"\r\n\r\n") + 4
+    resp_hdr = resp_buf[:resp_hdr_end].decode("utf-8", errors="replace")
+    resp_after = resp_buf[resp_hdr_end:]
+
+    resp_cl = 0
+    chunked = False
+    for line in resp_hdr.split("\r\n"):
+        low = line.lower()
+        if low.startswith("content-length:"):
+            resp_cl = int(line.split(":", 1)[1].strip())
+        if low.startswith("transfer-encoding:") and "chunked" in low:
+            chunked = True
+
+    if chunked:
+        body_buf = resp_after
+        while not body_buf.endswith(b"0\r\n\r\n"):
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            body_buf += chunk
+        if decode_chunked:
+            return resp_buf[:resp_hdr_end], resp_hdr, decode_chunked_body(body_buf), b""
+        return resp_buf[:resp_hdr_end], resp_hdr, body_buf, b""
+
+    if resp_cl > 0:
+        body_buf = resp_after
+        while len(body_buf) < resp_cl:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            body_buf += chunk
+        return resp_buf[:resp_hdr_end], resp_hdr, body_buf[:resp_cl], body_buf[resp_cl:]
+
+    return resp_buf[:resp_hdr_end], resp_hdr, resp_after, b""
+
+
+def send_subrequest(upstream_path, request_bytes):
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.connect(upstream_path)
+        sock.sendall(request_bytes)
+        return read_http_response(sock, decode_chunked=True)
+    finally:
+        sock.close()
+
+
+def get_path_parts(path):
+    parts = urlsplit(path)
+    segments = [seg for seg in parts.path.split("/") if seg]
+    return parts, segments
+
+
+def get_api_version_and_id(path, resource):
+    _, segments = get_path_parts(path)
+    if len(segments) >= 3 and segments[1] == resource:
+        if segments[2] in {"json", "create"}:
+            return None, None
+        return segments[0], segments[2]
+    return None, None
+
+
+def build_get_request(path):
+    return f"GET {path} HTTP/1.1\r\nHost: docker\r\nConnection: close\r\n\r\n".encode()
+
+
+def inspect_container(upstream_path, api_version, container_id):
+    return send_subrequest(upstream_path, build_get_request(f"/{api_version}/containers/{container_id}/json"))
+
+
+def inspect_exec(upstream_path, api_version, exec_id):
+    return send_subrequest(upstream_path, build_get_request(f"/{api_version}/exec/{exec_id}/json"))
+
+
+def parse_status_code(resp_hdr):
+    first = resp_hdr.split("\r\n", 1)[0]
+    parts = first.split(" ")
+    if len(parts) >= 2 and parts[1].isdigit():
+        return int(parts[1])
+    return 0
+
+
+def container_owned(upstream_path, api_version, container_id, user):
+    _, resp_hdr, body, _ = inspect_container(upstream_path, api_version, container_id)
+    if not resp_hdr:
+        return False, "unable to inspect container"
+    status = parse_status_code(resp_hdr)
+    if status == 404:
+        return False, "container not found"
+    if status != 200:
+        return False, "container inspect failed"
+    try:
+        data = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return False, "container inspect returned invalid JSON"
+    labels = data.get("Config", {}).get("Labels") or data.get("Labels") or {}
+    if labels.get(OWNER_LABEL) != user:
+        return False, f"container {container_id!r} is not owned by {user}"
+    return True, ""
+
+
+def exec_owned(upstream_path, api_version, exec_id, user):
+    _, resp_hdr, body, _ = inspect_exec(upstream_path, api_version, exec_id)
+    if not resp_hdr:
+        return False, "unable to inspect exec"
+    status = parse_status_code(resp_hdr)
+    if status == 404:
+        return False, "exec not found"
+    if status != 200:
+        return False, "exec inspect failed"
+    try:
+        data = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return False, "exec inspect returned invalid JSON"
+    container_id = data.get("ContainerID")
+    if not container_id:
+        return False, "exec inspect missing ContainerID"
+    return container_owned(upstream_path, api_version, container_id, user)
+
+
+def filter_container_list_body(body, user):
+    try:
+        items = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return body
+    if not isinstance(items, list):
+        return body
+    filtered = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        labels = item.get("Labels") or {}
+        if labels.get(OWNER_LABEL) == user:
+            filtered.append(item)
+    return json.dumps(filtered).encode()
+
+
+def rewrite_response_with_body(resp_hdr, body):
+    lines = []
+    for line in resp_hdr.split("\r\n"):
+        if line == "":
+            continue
+        low = line.lower()
+        if low.startswith("content-length:"):
+            lines.append(f"Content-Length: {len(body)}")
+        elif low.startswith("transfer-encoding:"):
+            continue
+        else:
+            lines.append(line)
+    return ("\r\n".join(lines) + "\r\n\r\n").encode() + body
 
 
 def relay(src, dst):
@@ -338,15 +555,7 @@ def handle(client, upstream_path, user, expected_uid, check_peer=True):
             if method == "POST" and "/containers/create" in path:
                 ok, reason, new_body = check_create(body, user)
                 if not ok:
-                    err = json.dumps({"message": f"isolator: {reason}"})
-                    resp = (
-                        f"HTTP/1.1 403 Forbidden\r\n"
-                        f"Content-Type: application/json\r\n"
-                        f"Content-Length: {len(err)}\r\n"
-                        f"Connection: close\r\n"
-                        f"\r\n{err}"
-                    ).encode()
-                    client.sendall(resp)
+                    client.sendall(json_error("403 Forbidden", reason))
                     log(user, f"BLOCKED: {reason}")
                     return
                 # Replace body with rewritten version (resolved paths)
@@ -363,6 +572,22 @@ def handle(client, upstream_path, user, expected_uid, check_peer=True):
                 else:
                     upstream.sendall(buf[:hdr_end] + body)
             else:
+                api_version, container_id = get_api_version_and_id(path, "containers")
+                if api_version and container_id and not path.endswith("/create") and not path.endswith("/json?all=1"):
+                    ok, reason = container_owned(upstream_path, api_version, container_id, user)
+                    if not ok:
+                        client.sendall(json_error("403 Forbidden", reason))
+                        log(user, f"BLOCKED: {reason}")
+                        return
+
+                api_version, exec_id = get_api_version_and_id(path, "exec")
+                if api_version and exec_id:
+                    ok, reason = exec_owned(upstream_path, api_version, exec_id, user)
+                    if not ok:
+                        client.sendall(json_error("403 Forbidden", reason))
+                        log(user, f"BLOCKED: {reason}")
+                        return
+
                 # Forward request to upstream as-is
                 upstream.sendall(buf[:hdr_end] + body)
 
@@ -381,45 +606,15 @@ def handle(client, upstream_path, user, expected_uid, check_peer=True):
             # Use raw relay for the response to avoid parsing issues
             # But we need to know when the response ends to continue the loop
             # Read response headers
-            resp_buf = b""
-            while b"\r\n\r\n" not in resp_buf:
-                chunk = upstream.recv(8192)
-                if not chunk:
-                    return
-                resp_buf += chunk
+            resp_hdr_bytes, resp_hdr, resp_body, leftover = read_http_response(upstream)
+            if not resp_hdr:
+                return
 
-            resp_hdr_end = resp_buf.index(b"\r\n\r\n") + 4
-            resp_hdr = resp_buf[:resp_hdr_end].decode("utf-8", errors="replace")
-            resp_after = resp_buf[resp_hdr_end:]
-
-            resp_cl = 0
-            chunked = False
-            for line in resp_hdr.split("\r\n"):
-                low = line.lower()
-                if low.startswith("content-length:"):
-                    resp_cl = int(line.split(":", 1)[1].strip())
-                if low.startswith("transfer-encoding:") and "chunked" in low:
-                    chunked = True
-
-            if chunked:
-                body_buf = resp_after
-                while not body_buf.endswith(b"0\r\n\r\n"):
-                    chunk = upstream.recv(65536)
-                    if not chunk:
-                        break
-                    body_buf += chunk
-                client.sendall(resp_buf[:resp_hdr_end] + body_buf)
-            elif resp_cl > 0:
-                body_buf = resp_after
-                while len(body_buf) < resp_cl:
-                    chunk = upstream.recv(65536)
-                    if not chunk:
-                        break
-                    body_buf += chunk
-                leftover = body_buf[resp_cl:]
-                client.sendall(resp_buf[:resp_hdr_end] + body_buf[:resp_cl])
+            if method == "GET" and re.match(r"^/v[\d.]+/containers/json$", urlsplit(path).path):
+                filtered_body = filter_container_list_body(resp_body, user)
+                client.sendall(rewrite_response_with_body(resp_hdr, filtered_body))
             else:
-                client.sendall(resp_buf)
+                client.sendall(resp_hdr_bytes + resp_body)
 
     except Exception as e:
         log(user, f"ERROR: {e}")
