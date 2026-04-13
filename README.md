@@ -34,7 +34,8 @@ sudo mkdir -p /etc/isolator
 sudo cp etc/config.toml /etc/isolator/config.toml
 sudo cp etc/profile /etc/isolator/profile
 sudo cp etc/CLAUDE.md /etc/isolator/CLAUDE.md
-sudo chmod 644 /etc/isolator/config.toml /etc/isolator/profile /etc/isolator/CLAUDE.md
+sudo chmod 600 /etc/isolator/config.toml                       # root-only (has auth paths)
+sudo chmod 644 /etc/isolator/profile /etc/isolator/CLAUDE.md   # readable by all
 
 # 2. Edit config.toml — set your admin username
 
