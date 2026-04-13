@@ -89,13 +89,17 @@ COMMAND_FLAGS = {
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 def run(cmd, check=True):
-    """Run a shell command."""
+    """Run a shell command. Show output on failure for easier debugging."""
     r = subprocess.run(cmd, capture_output=True, text=True)
-    if check and r.returncode != 0:
-        print(f"  ERROR: {' '.join(cmd)}")
-        if r.stderr:
-            print(f"         {r.stderr.strip()}")
-        r.check_returncode()
+    if r.returncode != 0:
+        if check or os.environ.get("ISOLATOR_DEBUG"):
+            print(f"  {'ERROR' if check else 'WARN'}: {' '.join(cmd)}")
+            if r.stdout.strip():
+                print(f"         stdout: {r.stdout.strip()}")
+            if r.stderr.strip():
+                print(f"         stderr: {r.stderr.strip()}")
+        if check:
+            r.check_returncode()
     return r
 
 
@@ -122,6 +126,15 @@ def run_as(user, cmd, check=True):
 def load_config():
     with open(CONFIG_PATH, "rb") as f:
         return tomllib.load(f)
+
+
+def get_admin():
+    """Get admin username from config (fallback: $USER)."""
+    try:
+        with open(CONFIG_PATH, "rb") as f:
+            return tomllib.load(f).get("admin") or os.environ.get("USER", "")
+    except (OSError, tomllib.TOMLDecodeError, PermissionError):
+        return os.environ.get("USER", "")
 
 
 def dscl_read(user, key):
@@ -323,36 +336,70 @@ CODEX_CONFIG_OVERRIDES = {
 }
 
 
+def _toml_escape(s):
+    """Escape a string for TOML (basic strings only)."""
+    return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def _toml_emit_value(v):
+    """Emit a TOML scalar/array. Doesn't handle nested tables."""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, int) or isinstance(v, float):
+        return str(v)
+    if isinstance(v, str):
+        return f'"{_toml_escape(v)}"'
+    if isinstance(v, list):
+        return "[" + ", ".join(_toml_emit_value(x) for x in v) + "]"
+    raise TypeError(f"unsupported TOML value type: {type(v).__name__}")
+
+
+def _toml_emit(data, prefix=""):
+    """Serialize a TOML document. Tables-of-tables, etc.
+
+    Stdlib has no TOML writer, so this is a small custom emitter.
+    Handles: scalars, arrays of scalars, nested tables, arrays of tables.
+    """
+    out = []
+    # First emit scalars at this level
+    scalars = {k: v for k, v in data.items() if not isinstance(v, dict)
+               and not (isinstance(v, list) and v and all(isinstance(x, dict) for x in v))}
+    for k, v in scalars.items():
+        out.append(f"{k} = {_toml_emit_value(v)}")
+    # Then nested tables
+    for k, v in data.items():
+        if isinstance(v, dict):
+            section = f"{prefix}{k}" if not prefix else f"{prefix}.{k}"
+            out.append(f"\n[{section}]")
+            out.append(_toml_emit(v, section))
+        elif isinstance(v, list) and v and all(isinstance(x, dict) for x in v):
+            section = f"{prefix}{k}" if not prefix else f"{prefix}.{k}"
+            for item in v:
+                out.append(f"\n[[{section}]]")
+                out.append(_toml_emit(item, section))
+    return "\n".join(line for line in out if line)
+
+
 def sanitize_codex_config(src, dst):
+    """Parse codex config.toml, drop project trust entries, override bypass mode."""
     try:
-        lines = src.read_text().splitlines()
-    except OSError:
+        with open(src, "rb") as f:
+            data = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        print(f"  ERROR parsing {src}: {e}")
         return False
-    sanitized = []
-    skip_section = False
+
+    # Drop [projects.*] trust entries
     removed_projects = 0
-    overridden_keys = set()
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("[projects.") and stripped.endswith("]"):
-            skip_section = True
-            removed_projects += 1
-            continue
-        if skip_section and stripped.startswith("[") and stripped.endswith("]"):
-            skip_section = False
-        if not skip_section:
-            # Override approval_policy and sandbox_mode
-            key = stripped.split("=")[0].strip() if "=" in stripped else None
-            if key in CODEX_CONFIG_OVERRIDES:
-                sanitized.append(f'{key} = "{CODEX_CONFIG_OVERRIDES[key]}"')
-                overridden_keys.add(key)
-            else:
-                sanitized.append(line)
-    # Add any overrides not already present
-    for key, value in CODEX_CONFIG_OVERRIDES.items():
-        if key not in overridden_keys:
-            sanitized.insert(0, f'{key} = "{value}"')
-    dst.write_text("\n".join(sanitized).rstrip() + "\n")
+    if "projects" in data and isinstance(data["projects"], dict):
+        removed_projects = len(data["projects"])
+        del data["projects"]
+
+    # Override bypass mode keys
+    for k, v in CODEX_CONFIG_OVERRIDES.items():
+        data[k] = v
+
+    dst.write_text(_toml_emit(data) + "\n")
     print(f"  Copying {src} -> {dst} (dropped {removed_projects} project trust entries, set bypass mode)")
     return True
 
@@ -561,10 +608,15 @@ def setup_ssh_key(name, admin):
     run(["chmod", "700", str(user_ssh)])
     run(["chmod", "600", str(auth_keys)])
 
-    # Add to SSH service ACL group
-    run(["dscl", ".", "-append", "/Groups/com.apple.access_ssh",
-         "GroupMembership", name], check=False)
-    print(f"  SSH key installed, added to SSH access group")
+    # Add to SSH service ACL group (created by macOS when Remote Login enabled)
+    r = run(["dscl", ".", "-read", "/Groups/com.apple.access_ssh"], check=False)
+    if r.returncode != 0:
+        print(f"  WARNING: SSH ACL group not found — Remote Login may not be enabled")
+        print(f"           SSH mode (iso -s) won't work until you enable Remote Login")
+    else:
+        run(["dscl", ".", "-append", "/Groups/com.apple.access_ssh",
+             "GroupMembership", name])
+        print(f"  SSH key installed, added to SSH access group")
 
 
 def exclude_from_backup(name):
@@ -743,11 +795,22 @@ def generate_anchor(config):
 
 
 def ensure_pf_conf():
-    content = PF_CONF.read_text() if PF_CONF.exists() else ""
-    if 'anchor "isolator"' not in content:
-        print(f"  Adding anchor to {PF_CONF}")
-        additions = '\nanchor "isolator"\nload anchor "isolator" from "/etc/pf.anchors/isolator"\n'
-        PF_CONF.write_text(content + additions)
+    """Add isolator anchor to /etc/pf.conf if missing. fcntl-locked."""
+    import fcntl
+    # Open for read+write, create if missing, and hold an exclusive lock
+    # for the entire read-modify-write sequence
+    fd = os.open(PF_CONF, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        with os.fdopen(fd, "r+") as f:
+            content = f.read()
+            if 'anchor "isolator"' not in content:
+                print(f"  Adding anchor to {PF_CONF}")
+                additions = '\nanchor "isolator"\nload anchor "isolator" from "/etc/pf.anchors/isolator"\n'
+                f.write(additions)
+    except Exception:
+        os.close(fd)
+        raise
 
 
 def generate_docker_iptables(config):
@@ -872,7 +935,7 @@ def ensure_docker_proxy(user):
         pid_file.unlink(missing_ok=True)
 
     # Find upstream Docker socket
-    admin = os.environ.get("USER", "bvt")
+    admin = get_admin()
     upstream = Path(f"/Users/{admin}/.orbstack/run/docker.sock")
     if not upstream.exists():
         upstream = Path("/var/run/docker.sock")
@@ -888,7 +951,7 @@ def ensure_docker_proxy(user):
 
 def build_ssh_cmd(user, command, extra, args, cwd=None):
     """Build SSH command to run as sandboxed user."""
-    admin = os.environ.get("USER", "bvt")
+    admin = get_admin()
     priv_key = ssh_key_path(admin)
 
     parts = []
@@ -910,7 +973,7 @@ def cmd_run(user, command, args, use_ssh=False):
     cwd = str(user_ws) if user_ws.exists() else None
 
     if use_ssh:
-        admin = os.environ.get("USER", "bvt")
+        admin = get_admin()
         priv_key = ssh_key_path(admin)
         if priv_key.exists():
             os.execvp("ssh", build_ssh_cmd(user, command, extra, args, cwd))
@@ -977,7 +1040,7 @@ def cmd_remote(user, args):
 
     bg = "--bg" in args
 
-    admin = os.environ.get("USER", "bvt")
+    admin = get_admin()
     priv_key = ssh_key_path(admin)
     if priv_key.exists():
         user_ws = WORKSPACES_DIR / user
