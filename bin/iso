@@ -499,7 +499,7 @@ def inject_auth_keyfiles(name, user_config):
 
 def create_skeleton(name, admin):
     home = Path(f"/Users/{name}")
-    for d in [".local/bin", ".local/lib", ".npm-global", ".cache"]:
+    for d in [".local/bin", ".local/lib", ".npm-global", ".cache", "tmp"]:
         (home / d).mkdir(parents=True, exist_ok=True)
     # Shared workspaces root
     WORKSPACES_DIR.mkdir(mode=0o775, exist_ok=True)

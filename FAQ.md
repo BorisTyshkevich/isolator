@@ -2,6 +2,24 @@
 
 Troubleshooting tips and workarounds for running sandboxed users on macOS.
 
+## Docker bind mount blocked: `/tmp/...` not allowed
+
+The Docker proxy blocks `/tmp` and `/private/tmp` because they're shared between sandbox users (proxy sockets live there too — cross-user attack vector).
+
+**Fix:** use `$TMPDIR` instead. The profile sets `TMPDIR=$HOME/tmp`, which is per-user and allowed for Docker mounts:
+
+```bash
+# Before:
+docker run -v /tmp/cache:/cache alpine ...   # BLOCKED
+
+# After:
+docker run -v "$TMPDIR/cache:/cache" alpine ...   # OK
+```
+
+Tools that respect `$TMPDIR` (Python `tempfile`, Go `os.TempDir()`, Node `os.tmpdir()`, mktemp, etc.) work automatically. Only hand-written `/tmp/...` paths need updating.
+
+`~/tmp/` is not auto-cleaned. Check size with `du -sh ~/tmp/`, clean with `rm -rf ~/tmp/*` when needed.
+
 ## ClickHouse client: `Killed: 9` or `mkstemp: Permission denied`
 
 ClickHouse ships as a compressed self-extracting binary. On first run it decompresses itself next to the binary file. Sandboxed users can't write to `/opt/homebrew/bin/`, so the decompression fails.

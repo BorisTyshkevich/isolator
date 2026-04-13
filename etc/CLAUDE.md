@@ -6,6 +6,14 @@ You are running as an isolated macOS user. Your filesystem, network, and credent
 
 Your workspace is `/Users/Workspaces/<your-username>/`. You start here by default. Place project code here.
 
+## Temporary files
+
+Use `$TMPDIR` (set to `~/tmp/`) instead of `/tmp`. `/tmp` is shared with other sandbox users and **blocked** for Docker bind mounts. Tools that respect `$TMPDIR` (Python tempfile, Go, Node, etc.) work automatically. For Docker:
+```bash
+docker run -v "$TMPDIR/cache:/cache" ...   # OK
+docker run -v /tmp/cache:/cache ...         # BLOCKED
+```
+
 ## Chrome Browser — CRITICAL
 
 **NEVER launch Chrome yourself.** Do not run `open -a "Google Chrome"`, do not run the Chrome binary, do not `pkill` Chrome. You will break the admin's browser and cause zombie processes.

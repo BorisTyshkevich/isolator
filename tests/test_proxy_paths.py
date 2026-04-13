@@ -33,6 +33,17 @@ class TestPathAllowed(unittest.TestCase):
     def test_private_tmp_blocked(self):
         self.assertFalse(is_path_allowed("/private/tmp/foo", "acm"))
 
+    def test_user_tmp_allowed(self):
+        # Per-user TMPDIR ($HOME/tmp) IS allowed
+        self.assertTrue(is_path_allowed("/Users/acm/tmp", "acm"))
+
+    def test_user_tmp_subdir_allowed(self):
+        self.assertTrue(is_path_allowed("/Users/acm/tmp/cache/x", "acm"))
+
+    def test_other_user_tmp_blocked(self):
+        # acm cannot use click's tmp
+        self.assertFalse(is_path_allowed("/Users/click/tmp", "acm"))
+
     def test_admin_home_blocked(self):
         self.assertFalse(is_path_allowed("/Users/bvt", "acm"))
 

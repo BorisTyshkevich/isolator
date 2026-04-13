@@ -40,6 +40,13 @@ class TestCheckCreate(unittest.TestCase):
             "acm")
         self.assertFalse(ok)
 
+    def test_allowed_user_tmp_bind(self):
+        # ~/tmp/ is per-user (TMPDIR) and allowed
+        ok, _, _ = check_create(
+            self._make_request(Binds=["/Users/acm/tmp/cache:/cache:ro"]),
+            "acm")
+        self.assertTrue(ok)
+
     def test_allowed_named_volume(self):
         ok, _, _ = check_create(
             self._make_request(Binds=["myvolume:/data"]),

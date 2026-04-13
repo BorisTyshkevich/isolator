@@ -31,10 +31,17 @@ def resolve_path(path):
 
 
 def is_path_allowed(path, user):
-    """Allow only the user's own workspace. /tmp is shared and dangerous."""
+    """Allow only the user's own workspace and ~/tmp.
+
+    /tmp and /private/tmp are shared between sandbox users → blocked.
+    Per-user TMPDIR is /Users/<user>/tmp/ (set by profile).
+    """
     resolved = resolve_path(path)
     user_ws = f"{WORKSPACES_DIR}/{user}"
+    user_tmp = f"/Users/{user}/tmp"
     if resolved == user_ws or resolved.startswith(user_ws + "/"):
+        return True
+    if resolved == user_tmp or resolved.startswith(user_tmp + "/"):
         return True
     return False
 

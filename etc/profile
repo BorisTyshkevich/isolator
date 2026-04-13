@@ -7,6 +7,11 @@
 KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 [[ -f "$KEYCHAIN" ]] && security unlock-keychain -p isolator "$KEYCHAIN" 2>/dev/null
 
+# Per-user TMPDIR — /tmp is shared and blocked by Docker proxy.
+# Tools that respect $TMPDIR (Python tempfile, Go, Node, etc.) use this.
+mkdir -p "$HOME/tmp" 2>/dev/null
+export TMPDIR="$HOME/tmp"
+
 # Environment variables from config key files (OPENAI_API_KEY, etc.)
 [[ -f "$HOME/.env" ]] && source "$HOME/.env"
 
