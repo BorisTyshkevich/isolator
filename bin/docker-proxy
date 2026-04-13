@@ -61,53 +61,73 @@ DANGEROUS_HOST_CONFIG = {
 
 
 def check_create(body_bytes, user):
+    """Validate and rewrite a container create request.
+
+    Returns (ok, reason, new_body_bytes). The new body has all bind mount
+    paths replaced with their realpath() result — Docker will then mount
+    exactly what we validated, not what a symlink points to at mount time.
+    """
     try:
         data = json.loads(body_bytes)
     except (json.JSONDecodeError, UnicodeDecodeError):
-        return False, "invalid JSON body"
+        return False, "invalid JSON body", body_bytes
 
     hc = data.get("HostConfig") or {}
 
     # Reject any dangerous field that's set (truthy)
     for field in DANGEROUS_HOST_CONFIG:
         val = hc.get(field)
-        if val:  # non-empty list, dict, true, non-empty string
-            return False, f"{field} is not allowed"
+        if val:
+            return False, f"{field} is not allowed", body_bytes
 
     # Network: must be empty (default), bridge, or iso-<user>
     nm = hc.get("NetworkMode", "")
     allowed_networks = {"", "default", "bridge", f"iso-{user}"}
     if nm not in allowed_networks:
-        return False, f"NetworkMode {nm!r} not allowed (must be: bridge or iso-{user})"
+        return False, f"NetworkMode {nm!r} not allowed (must be: bridge or iso-{user})", body_bytes
 
-    # Bind mounts
+    # Validate AND rewrite Binds to use resolved paths (TOCTOU-safe)
+    new_binds = []
     for bind in hc.get("Binds") or []:
-        source = bind.split(":")[0]
+        parts = bind.split(":")
+        source = parts[0]
         if not source.startswith("/"):
-            continue  # named volume
-        if not is_path_allowed(source, user):
-            return False, f"bind mount not allowed: {source}"
-        if "docker.sock" in resolve_path(source):
-            return False, "mounting Docker socket is not allowed"
+            new_binds.append(bind)  # named volume — pass through
+            continue
+        resolved = resolve_path(source)
+        if not is_path_allowed(resolved, user):
+            return False, f"bind mount not allowed: {source}", body_bytes
+        if "docker.sock" in resolved:
+            return False, "mounting Docker socket is not allowed", body_bytes
+        # Replace source with resolved path
+        parts[0] = resolved
+        new_binds.append(":".join(parts))
+    if hc.get("Binds"):
+        hc["Binds"] = new_binds
 
-    # Mount API
+    # Validate AND rewrite Mounts (Type=bind)
+    new_mounts = []
     for mount in hc.get("Mounts") or []:
         if mount.get("Type") == "bind":
             source = mount.get("Source", "")
-            if not is_path_allowed(source, user):
-                return False, f"mount not allowed: {source}"
-            if "docker.sock" in resolve_path(source):
-                return False, "mounting Docker socket is not allowed"
+            resolved = resolve_path(source)
+            if not is_path_allowed(resolved, user):
+                return False, f"mount not allowed: {source}", body_bytes
+            if "docker.sock" in resolved:
+                return False, "mounting Docker socket is not allowed", body_bytes
+            mount = dict(mount)  # don't mutate original
+            mount["Source"] = resolved
+        new_mounts.append(mount)
+    if hc.get("Mounts"):
+        hc["Mounts"] = new_mounts
 
-    # Container User: reject empty/root/0
-    container_user = data.get("User", "").strip()
-    if container_user in ("", "root", "0", "0:0"):
-        # Allow images that set USER explicitly via Dockerfile,
-        # but reject explicit root requests at container create time
-        if container_user in ("root", "0", "0:0"):
-            return False, f"container user {container_user!r} not allowed"
+    # Container User: reject explicit root
+    container_user = (data.get("User", "") or "").strip()
+    if container_user in ("root", "0", "0:0"):
+        return False, f"container user {container_user!r} not allowed", body_bytes
 
-    return True, ""
+    # Re-serialize the (possibly modified) body
+    return True, "", json.dumps(data).encode()
 
 
 def relay(src, dst):
@@ -193,9 +213,9 @@ def handle(client, upstream_path, user):
                 if len(chunk) > needed:
                     leftover += chunk[needed:]
 
-            # Inspect container create
+            # Inspect container create — and rewrite paths to prevent TOCTOU
             if method == "POST" and "/containers/create" in path:
-                ok, reason = check_create(body, user)
+                ok, reason, new_body = check_create(body, user)
                 if not ok:
                     err = json.dumps({"message": f"isolator: {reason}"})
                     resp = (
@@ -208,9 +228,22 @@ def handle(client, upstream_path, user):
                     client.sendall(resp)
                     log(user, f"BLOCKED: {reason}")
                     return
-
-            # Forward request to upstream
-            upstream.sendall(buf[:hdr_end] + body)
+                # Replace body with rewritten version (resolved paths)
+                if new_body != body:
+                    # Rebuild header with updated Content-Length
+                    new_hdr_lines = []
+                    for line in hdr.split("\r\n"):
+                        if line.lower().startswith("content-length:"):
+                            new_hdr_lines.append(f"Content-Length: {len(new_body)}")
+                        else:
+                            new_hdr_lines.append(line)
+                    new_hdr = "\r\n".join(new_hdr_lines)
+                    upstream.sendall(new_hdr.encode() + new_body)
+                else:
+                    upstream.sendall(buf[:hdr_end] + body)
+            else:
+                # Forward request to upstream as-is
+                upstream.sendall(buf[:hdr_end] + body)
 
             # For streaming endpoints: switch to raw bidirectional relay
             # and stop parsing HTTP — these don't return until done
