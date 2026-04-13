@@ -145,9 +145,33 @@ def relay(src, dst):
         pass
 
 
-def handle(client, upstream_path, user):
+def get_peer_uid(sock):
+    """Get UID of the connecting peer (macOS/BSD)."""
+    import struct
+    try:
+        # macOS: LOCAL_PEERCRED returns struct xucred
+        # First 4 bytes = version, next 4 = uid
+        SOL_LOCAL = 0
+        LOCAL_PEERCRED = 0x001
+        # xucred: cr_version (uint32), cr_uid (uid_t=uint32), ngroups, groups[16]
+        data = sock.getsockopt(SOL_LOCAL, LOCAL_PEERCRED, 76)
+        version, uid = struct.unpack_from("II", data)
+        return uid
+    except OSError:
+        return None
+
+
+def handle(client, upstream_path, user, expected_uid, check_peer=True):
     upstream = None
     try:
+        # Defense-in-depth: verify peer UID matches expected user
+        if check_peer:
+            peer_uid = get_peer_uid(client)
+            if peer_uid is not None and peer_uid != expected_uid:
+                log(user, f"BLOCKED: peer uid={peer_uid} does not match expected uid={expected_uid}")
+                client.close()
+                return
+
         upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         upstream.connect(upstream_path)
 
@@ -313,17 +337,45 @@ def main():
     parser.add_argument("--user", required=True)
     parser.add_argument("--socket", required=True)
     parser.add_argument("--upstream", default="/var/run/docker.sock")
+    parser.add_argument("--insecure-skip-checks", action="store_true",
+                        help="Skip ownership/UID checks (testing only)")
     args = parser.parse_args()
+
+    # Verify parent dir is root-owned (defense against squatting)
+    parent = Path(args.socket).parent
+    st = parent.stat()
+    if not args.insecure_skip_checks and st.st_uid != 0:
+        print(f"FATAL: {parent} is not root-owned (uid={st.st_uid}) — refusing to start")
+        sys.exit(1)
 
     if os.path.exists(args.socket):
         os.unlink(args.socket)
 
+    # Resolve target user UID for socket ownership and SO_PEERCRED check
+    import pwd
+    try:
+        target_uid = pwd.getpwnam(args.user).pw_uid
+    except KeyError:
+        if args.insecure_skip_checks:
+            target_uid = os.getuid()
+        else:
+            print(f"FATAL: user {args.user!r} not found")
+            sys.exit(1)
+
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    server.bind(args.socket)
-    os.chmod(args.socket, 0o777)
+    # Set umask before bind so socket is created with restrictive perms
+    old_umask = os.umask(0o077)
+    try:
+        server.bind(args.socket)
+    finally:
+        os.umask(old_umask)
+    # Socket must be owned by target user with mode 600 — only that user can connect
+    if not args.insecure_skip_checks:
+        os.chown(args.socket, target_uid, -1)
+    os.chmod(args.socket, 0o600)
     server.listen(32)
 
-    log(args.user, f"proxy: {args.socket} → {args.upstream}")
+    log(args.user, f"proxy: {args.socket} (uid={target_uid}, mode 600) → {args.upstream}")
 
     def shutdown(sig, frame):
         server.close()
@@ -340,7 +392,8 @@ def main():
         try:
             client, _ = server.accept()
             t = threading.Thread(target=handle,
-                                 args=(client, args.upstream, args.user),
+                                 args=(client, args.upstream, args.user, target_uid,
+                                       not args.insecure_skip_checks),
                                  daemon=True)
             t.start()
         except OSError:

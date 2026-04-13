@@ -916,8 +916,16 @@ def ensure_docker_proxy(user):
                        capture_output=True)
         subprocess.run(["sudo", "chown", "root:wheel", str(DOCKER_PROXY_DIR)],
                        capture_output=True)
-        subprocess.run(["sudo", "chmod", "755", str(DOCKER_PROXY_DIR)],
+        # 711: traverse-only (sandbox users can stat /var/run/isolator-docker/<user>.sock
+        # if they know the name, but can't list other users' sockets)
+        subprocess.run(["sudo", "chmod", "711", str(DOCKER_PROXY_DIR)],
                        capture_output=True)
+    else:
+        # Verify ownership — refuse to use a hijacked dir
+        st = DOCKER_PROXY_DIR.stat()
+        if st.st_uid != 0:
+            print(f"FATAL: {DOCKER_PROXY_DIR} not root-owned (uid={st.st_uid})")
+            sys.exit(1)
 
     sock = DOCKER_PROXY_DIR / f"{user}.sock"
     pid_file = DOCKER_PROXY_DIR / f"{user}.pid"
@@ -1059,8 +1067,14 @@ def cmd_remote(user, args):
                            capture_output=True)
             subprocess.run(["sudo", "chown", "root:wheel", str(REMOTE_PID_DIR)],
                            capture_output=True)
-            subprocess.run(["sudo", "chmod", "755", str(REMOTE_PID_DIR)],
+            subprocess.run(["sudo", "chmod", "700", str(REMOTE_PID_DIR)],
                            capture_output=True)
+        else:
+            # Refuse hijacked dir
+            st = REMOTE_PID_DIR.stat()
+            if st.st_uid != 0:
+                print(f"FATAL: {REMOTE_PID_DIR} not root-owned (uid={st.st_uid})")
+                sys.exit(1)
         proc = subprocess.Popen(
             remote_cmd,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)

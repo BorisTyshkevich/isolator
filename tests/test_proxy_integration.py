@@ -30,13 +30,14 @@ class TestProxyIntegration(unittest.TestCase):
         cls.mock_thread = Thread(target=cls._run_mock_upstream, daemon=True)
         cls.mock_thread.start()
 
-        # Start proxy
+        # Start proxy with --insecure-skip-checks (test runs as non-root in tempdir)
         proxy_script = str(Path(__file__).parent.parent / "bin" / "docker-proxy")
         cls.proxy_proc = subprocess.Popen(
             [sys.executable, proxy_script,
              "--user", "testuser",
              "--socket", cls.proxy_sock,
-             "--upstream", cls.upstream_sock],
+             "--upstream", cls.upstream_sock,
+             "--insecure-skip-checks"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         # Wait for proxy socket
         for _ in range(20):
@@ -151,6 +152,15 @@ class TestProxyIntegration(unittest.TestCase):
     def test_clean_create_passes(self):
         resp = self._send_create({})
         self.assertIn("201", resp)
+
+    def test_socket_perms_locked_down(self):
+        """Socket should be mode 600 — only target user can connect."""
+        import stat
+        st = os.stat(self.proxy_sock)
+        mode = stat.S_IMODE(st.st_mode)
+        # In test mode --insecure-skip-checks skips chown but still chmods 600
+        self.assertEqual(mode, 0o600,
+                         f"Socket mode is {oct(mode)}, expected 0o600")
 
     def test_ping_passes_through(self):
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
