@@ -956,13 +956,29 @@ def ensure_docker_proxy(user):
     if not upstream.exists():
         return  # no Docker / no OrbStack
 
+    # Prime sudo auth (Touch ID prompt) before backgrounding the proxy.
+    # Without this, `sudo` in the Popen would need a tty we can't provide.
+    r = subprocess.run(["sudo", "-v"])
+    if r.returncode != 0:
+        print("  WARNING: sudo auth failed — Docker proxy won't start")
+        return
+
     proc = subprocess.Popen(
-        ["sudo", sys.executable, str(DOCKER_PROXY_SCRIPT),
+        ["sudo", "-n", sys.executable, str(DOCKER_PROXY_SCRIPT),
          "--user", user, "--socket", str(sock), "--upstream", str(upstream)],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL if not os.environ.get("ISOLATOR_DEBUG") else None,
+        start_new_session=True)
     # Write pid file via sudo (dir is root-owned)
     subprocess.run(["sudo", "tee", str(pid_file)],
                    input=str(proc.pid), text=True, capture_output=True)
+
+    # Wait briefly for the socket to appear — profile checks for it
+    import time
+    for _ in range(30):  # up to 3 seconds
+        if sock.exists():
+            break
+        time.sleep(0.1)
 
 
 def build_ssh_cmd(user, command, extra, args, cwd=None):
