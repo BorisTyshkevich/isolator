@@ -31,6 +31,7 @@ Examples:
 
 import json
 import os
+import shlex
 import shutil
 import socket
 import subprocess
@@ -828,8 +829,9 @@ def build_ssh_cmd(user, command, extra, args, cwd=None):
 
     parts = []
     if cwd:
-        parts.append(f"cd {cwd}")
-    parts.append(f"exec {command} " + " ".join(extra + args))
+        parts.append(f"cd {shlex.quote(cwd)}")
+    quoted = " ".join(shlex.quote(a) for a in [command] + extra + args)
+    parts.append(f"exec {quoted}")
 
     remote = " && ".join(parts)
     return ["ssh", "-t", "-i", str(priv_key)] + SSH_OPTS + [
@@ -853,11 +855,13 @@ def cmd_run(user, command, args, use_ssh=False):
             sys.exit(1)
     else:
         # Sudo mode: inherits admin's GUI session (open, Chrome, etc. work)
+        all_args = [command] + extra + args
         if cwd:
-            shell_cmd = f"cd {cwd} && exec {command} " + " ".join(extra + args)
+            quoted = " ".join(shlex.quote(a) for a in all_args)
+            shell_cmd = f"cd {shlex.quote(cwd)} && exec {quoted}"
             os.execvp("sudo", ["sudo", "-u", user, "-i", "bash", "-c", shell_cmd])
         else:
-            os.execvp("sudo", ["sudo", "-u", user, "-i", command] + extra + args)
+            os.execvp("sudo", ["sudo", "-u", user, "-i"] + all_args)
 
 
 # ── Remote command ──────────────────────────────────────────────────────────
