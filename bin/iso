@@ -669,6 +669,9 @@ def cmd_create(name, config, from_user=None):
         print(f"  Locking admin home {admin_home} to 700")
         run(["chmod", "700", str(admin_home)])
 
+    # Ensure isolator group exists (idempotent) — needed even if user exists
+    ensure_isolator_group()
+
     if user_exists(name):
         print(f"  User {name} already exists, skipping dscl creation")
     else:
