@@ -589,7 +589,7 @@ def set_ownership(name):
                 run(["chown", "-R", "root:wheel", str(path)])
                 run(["chmod", "-R", "755", str(path)])
 
-    for d in [".local", ".npm-global", ".cache", "workspace"]:
+    for d in [".local", ".npm-global", ".cache", "tmp"]:
         path = home / d
         if path.exists():
             run(["chown", "-R", f"{name}:{ISOLATOR_GROUP}", str(path)])
