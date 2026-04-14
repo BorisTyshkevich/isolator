@@ -133,8 +133,20 @@ A coding agent is only as good as the tools it can reach.
 Maintaining a good tool sets is a big work.
 
 ---
+## Three Dimensions of Isolation
 
-## The Solution: macOS Users + RBAC
+| Dimension | Threat | macOS Solution | Linux Solution |
+|-----------|--------|---------------|----------------|
+| **Files** | Read `~/.ssh`, `~/.aws` | chmod 700 + ACL | chmod 700 + ACL |
+| **Network** | Exfiltrate to `evil.com` | pf by UID | Network namespace + proxy |
+| **Processes** | Access admin's Docker, Chrome | Per-resource isolation | PID namespace |
+
+macOS has no PID namespaces — agents can `ps aux` and see everything.
+But **seeing** a process ≠ **controlling** it. However, access requires a controlled channel via socket or port
+
+---
+
+## The idea: macOS Users + RBAC
 
 macOS already has everything we need:
 
@@ -146,7 +158,7 @@ macOS already has everything we need:
 | Tool sharing | Read-only `/opt/homebrew`, `/usr/local` |
 | Admin control | sudo with Touch ID |
 
-Zero overhead. No VM. No Docker-in-Docker.
+Zero overhead. No VMs. No Docker-in-Docker.
 
 ---
 
@@ -157,11 +169,10 @@ you (main OS user, has root access via Touch ID sudo)
  |
  |-- iso acm claude                 # ACM project
  |-- iso click codex                # ClickHouse project
- |-- iso mcp claude                 # mcp project
  |
  +-- acm    uid=600  /Users/acm/    chmod 700
  +-- click  uid=601  /Users/click/  chmod 700
- +-- mcp  uid=602  /Users/tools/  chmod 700
+
 ```
 
 Each sandbox user:
@@ -186,13 +197,14 @@ Also grants read/write access for admin to sandbox via ACL.
 - Inherits admin's GUI session — `open`, Chrome, browser auth all work
 - `iso -s <user>` for SSH mode (proper login session, no GUI)
 
+---
+
+## Isolator: Network isolation
+
 **`iso pf`** -- generates per-user firewall rules:
 - Resolves hostnames to IPs from config
 - Each user gets their own allowlist
 - Kernel-level enforcement by UID
-
-**Auth:** first run of `iso <user> claude` → `/login` in browser → token
-stored in user's macOS keychain with ACL (only Claude can read it).
 
 ---
 
@@ -260,6 +272,9 @@ iso create acm                    # re-copies shell/claude config
 iso pf                            # refresh firewall rules
 ```
 
+**Auth:** first run of `iso <user> claude` → `/login` in browser → token
+stored in user's macOS keychain with ACL (only Claude can read it).
+
 ---
 
 ## Why Not Other Approaches?
@@ -287,11 +302,31 @@ npm test                # integration tests hit real services
 **The problem:** 
 - Docker containers run inside a Linux VM by `main` user 
 - macOS `pf` rules (by UID) don't apply. An agent can `docker run curl evil.com`.
+- Docker socket = root access to the filesystem. A sandboxed agent can:
 
-**The solution:**
+```bash
+docker run -v /Users/admin/.ssh:/mnt alpine cat /mnt/id_rsa  # 💀
+```
 
-- hardlink docker socket to /var
-- limit docker network by iptables
+---
+## Docker hardering 
+
+Access to the docker socket over filtering proxy that will inspects every API call:
+
+```
+agent → /Users/acm/tmp/acm.sock → proxy → Docker daemon       
+```
+checks Binds, blocks /Users/admin access
+
+| What                             | Allowed? |
+|----------------------------------|:---:|
+| `-v /Users/Workspaces/acm/:/app` | Yes |
+| `-v /Users/acm/tmp/test:/data`   | Yes |
+| `-v /Users/admin/.ssh:/mnt`      | **No** |
+| `--privileged`                   | **No** |
+| `--net=host`                     | **No** |
+
+Proxy runs as admin/main user. Auto-started by `iso` command .
 
 ---
 
@@ -319,51 +354,44 @@ docker run --network=iso-acm clickhouse    # ✅ starts
 
 ---
 
-## Docker Volume Mount Attack
-
-Docker socket = root access to the filesystem. A sandboxed agent can:
-
-```bash
-docker run -v /Users/admin/.ssh:/mnt alpine cat /mnt/id_rsa  # 💀
-```
-
-**Solution: per-user Docker socket proxy** that inspects every `containers/create` API call:
-
-```
-agent → /tmp/isolator-docker/acm.sock → proxy → Docker daemon
-        (checks Binds, blocks /Users/admin)
-```
-
-| What | Allowed? |
-|------|:---:|
-| `-v /Users/Workspaces/acm/:/app` | Yes |
-| `-v /tmp/test:/data` | Yes |
-| `-v /Users/admin/.ssh:/mnt` | **No** |
-| `--privileged` | **No** |
-| `--net=host` | **No** |
-
-Proxy runs as admin (no sudo). Auto-started by `iso` on first use.
-
----
-
 ## Safe Browser Access for Agents
 
 Agents need browsers for testing, auth flows, and screenshots.
-But giving an agent your real Chrome = access to all your cookies and passwords.
+But giving an agent Chrome = **unrestricted internet** (bypasses pf and Docker rules).
 
-**Solution:** dedicated agent Chrome with an empty profile:
+**Two modes:**
 
 ```bash
-iso chrome              # starts Chrome with empty profile on port 9222
-iso acm claude          # agent connects via Chrome DevTools MCP
+iso chrome                # unrestricted (development)
+iso chrome --filtered     # behind tinyproxy (same domain whitelist as pf)
 ```
 
-| | Your Chrome | Agent Chrome |
-|---|---|---|
-| Profile | Your bookmarks, passwords, cookies | Empty (`/tmp/chrome-agent`) |
-| Debug port | None — not accessible | `localhost:9222` via CDP |
-| Agent access | No | Yes, via MCP |
-| On reboot | Persists | Wiped |
+| | Your Chrome | Agent Chrome | Filtered Chrome |
+|---|---|---|---|
+| Profile | Your cookies | Empty | Empty |
+| Internet | Full | Full | **Whitelisted only** |
+| Agent access | No | Yes (MCP) | Yes (MCP) |
+
+**Filtered mode** uses tinyproxy (`FilterDefaultDeny`) with the same hosts
+from `config.toml`. Chrome's `--proxy-server` flag can't be bypassed by JS.
+
+---
+
+## Browser Network Filtering
+
+```
+Agent → Chrome MCP → Chrome --proxy-server=localhost:8888
+                          ↓
+                     tinyproxy (domain whitelist)
+                     FilterDefaultDeny Yes
+                          ↓
+                     only config.toml hosts pass
+```
+
+- **Domain-level** — no IP resolution, no CDN leakage
+- **Same source of truth** — `config.toml` hosts for pf, Docker iptables, AND Chrome
+- **Fail-safe** — if proxy dies, Chrome can't reach anything
+- **Can't bypass** — `--proxy-server` enforced at Chrome network stack level
 
 ---
 
@@ -410,25 +438,6 @@ iso acm remote          # starts claude --remote as sandboxed user
 | **Config** | Root-owned, chmod 444 | No |
 | **Your home** | Standard Unix DAC | No |
 | **Your tools** | World-readable, not writable | No |
-
----
-
-## Three Dimensions of Isolation
-
-| Dimension | Threat | macOS Solution | Linux Solution |
-|-----------|--------|---------------|----------------|
-| **Files** | Read `~/.ssh`, `~/.aws` | chmod 700 + ACL | chmod 700 + ACL |
-| **Network** | Exfiltrate to `evil.com` | pf by UID | Network namespace + proxy |
-| **Processes** | Access admin's Docker, Chrome | Per-resource isolation | PID namespace |
-
-macOS has no PID namespaces — agents can `ps aux` and see everything.
-But **seeing** a process ≠ **controlling** it. Access requires a channel:
-
-| Process | Channel | Isolator's fix |
-|---------|---------|---------------|
-| Docker daemon | `/var/run/docker.sock` | Per-user networks + iptables egress |
-| Chrome browser | CDP on `localhost:9222` | Dedicated empty-profile browser (`iso chrome`) |
-| Other services | localhost ports | pf allows localhost (admin-controlled) |
 
 ---
 
