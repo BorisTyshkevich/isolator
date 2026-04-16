@@ -102,17 +102,21 @@ def is_endpoint_allowed(method, path, user="acm"):
     plain = parts.path
     query = parse_qs(parts.query, keep_blank_values=True)
 
-    if method == "HEAD" and plain in ("/_ping",) or (
-        method == "GET" and plain in ("/_ping",)
-    ):
+    V = r"/v[\d.]+"  # versioned prefix
+
+    # ── System ──
+    if method in ("HEAD", "GET") and plain in ("/_ping",):
         return True
-    if method == "GET" and re.match(r"^/v[\d.]+/(_ping|version|system/events)$", plain):
+    if method == "GET" and re.match(rf"^{V}/(_ping|version|info|system/df|system/events)$", plain):
         return True
-    if method == "GET" and plain == "/_ping":
+    # Unversioned /info — Go Docker SDK calls this before version negotiation
+    if method == "GET" and plain == "/info":
         return True
-    if method == "GET" and re.match(r"^/v[\d.]+/containers/json$", plain):
+
+    # ── Containers ──
+    if method == "GET" and re.match(rf"^{V}/containers/json$", plain):
         return True
-    if method == "POST" and re.match(r"^/v[\d.]+/containers/create$", plain):
+    if method == "POST" and re.match(rf"^{V}/containers/create$", plain):
         return True
     if _CONTAINER_ACTION_RE.match(plain):
         return True
@@ -120,32 +124,51 @@ def is_endpoint_allowed(method, path, user="acm"):
         return True
     if _EXEC_ACTION_RE.match(plain):
         return True
+
+    # ── Images ──
     if method == "GET" and _IMAGE_INSPECT_RE.match(plain):
         return True
-    if method == "POST" and re.match(r"^/v[\d.]+/images/create$", plain):
+    if method == "GET" and re.match(rf"^{V}/images/json$", plain):
+        return True  # image list — testcontainers needs it
+    if method == "POST" and re.match(rf"^{V}/images/create$", plain):
         if "fromSrc" in query:
-            return False
+            return False  # block importing tarballs from URLs
         allowed_keys = {"fromImage", "tag", "platform"}
         if set(query) - allowed_keys:
             return False
         return bool(query.get("fromImage") and query["fromImage"][0])
-    if method == "GET" and re.match(r"^/v[\d.]+/networks/json$", plain):
-        return True
-    if method == "GET" and re.match(r"^/v[\d.]+/networks/bridge(/.*)?$", plain):
-        return True
-    # User-specific iso network endpoint: /vX/networks/iso-<user> or .../iso-<user>/sub
+
+    # ── Networks ──
+    if method == "GET" and re.match(rf"^{V}/networks(/json)?$", plain):
+        return True  # list networks — read-only
+    if method == "GET" and re.match(rf"^{V}/networks/[a-zA-Z0-9_.-]+$", plain):
+        return True  # inspect any network — read-only
+    # User-specific network operations: iso-<user> or testcontainers-created
     iso_net_re = re.compile(_USER_NETWORK_RE_TEMPLATE.format(user=re.escape(user)))
     if iso_net_re.match(plain):
         return True
-    # docker build (streams context tar — large body, not JSON)
-    if method == "POST" and re.match(r"^/v[\d.]+/build$", plain):
+    # Network connect/disconnect/delete — allow for any network
+    # (containers are already restricted to iso-<user> at create time)
+    if method == "POST" and re.match(rf"^{V}/networks/[a-zA-Z0-9_.-]+/(connect|disconnect)$", plain):
         return True
-    # volumes (named volumes only — no host paths)
-    if re.match(r"^/v[\d.]+/volumes(/.*)?$", plain):
+    if method == "DELETE" and re.match(rf"^{V}/networks/[a-zA-Z0-9_.-]+$", plain):
         return True
-    # system info
-    if method == "GET" and re.match(r"^/v[\d.]+/(info|system/df)$", plain):
+    # Network create — testcontainers needs this for its own networks
+    if method == "POST" and re.match(rf"^{V}/networks/create$", plain):
+        return True  # validated in check_network_create if needed
+
+    # ── Build ──
+    if method == "POST" and re.match(rf"^{V}/build$", plain):
         return True
+
+    # ── Volumes ──
+    if re.match(rf"^{V}/volumes(/.*)?$", plain):
+        return True
+
+    # ── Events ──
+    if method == "GET" and re.match(rf"^{V}/events$", plain):
+        return True
+
     return False
 
 
