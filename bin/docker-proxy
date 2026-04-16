@@ -137,6 +137,15 @@ def is_endpoint_allowed(method, path, user="acm"):
     iso_net_re = re.compile(_USER_NETWORK_RE_TEMPLATE.format(user=re.escape(user)))
     if iso_net_re.match(plain):
         return True
+    # docker build (streams context tar — large body, not JSON)
+    if method == "POST" and re.match(r"^/v[\d.]+/build$", plain):
+        return True
+    # volumes (named volumes only — no host paths)
+    if re.match(r"^/v[\d.]+/volumes(/.*)?$", plain):
+        return True
+    # system info
+    if method == "GET" and re.match(r"^/v[\d.]+/(info|system/df)$", plain):
+        return True
     return False
 
 

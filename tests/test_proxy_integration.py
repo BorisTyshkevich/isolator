@@ -238,7 +238,7 @@ class TestProxyIntegration(unittest.TestCase):
         s.close()
         self.assertIn(b"HTTP/1.1", resp)
 
-    def test_blocked_build_returns_403(self):
+    def test_build_passes_through(self):
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.connect(self.proxy_sock)
         s.settimeout(5)
@@ -258,7 +258,9 @@ class TestProxyIntegration(unittest.TestCase):
         except socket.timeout:
             pass
         s.close()
-        self.assertIn(b"403", resp)
+        # Build is now allowed — should get a response from mock (201)
+        self.assertIn(b"HTTP/1.1", resp)
+        self.assertNotIn(b"403", resp)
 
     def test_container_list_filtered_to_owned(self):
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

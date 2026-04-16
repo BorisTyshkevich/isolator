@@ -33,13 +33,16 @@ class TestEndpointAllowlist(unittest.TestCase):
         self.assertTrue(is_endpoint_allowed("POST", "/v1.51/images/create?fromImage=alpine"))
         self.assertTrue(is_endpoint_allowed("GET", "/v1.51/images/alpine/json"))
 
-    def test_blocked_global_metadata(self):
-        self.assertFalse(is_endpoint_allowed("GET", "/v1.51/info"))
-        self.assertFalse(is_endpoint_allowed("GET", "/v1.51/images/json"))
-        self.assertFalse(is_endpoint_allowed("GET", "/v1.51/system/df"))
+    def test_info_allowed(self):
+        self.assertTrue(is_endpoint_allowed("GET", "/v1.51/info"))
+        self.assertTrue(is_endpoint_allowed("GET", "/v1.51/system/df"))
 
-    def test_build(self):
-        self.assertFalse(is_endpoint_allowed("POST", "/v1.51/build"))
+    def test_images_list_blocked(self):
+        # Image list reveals all images on shared daemon — blocked
+        self.assertFalse(is_endpoint_allowed("GET", "/v1.51/images/json"))
+
+    def test_build_allowed(self):
+        self.assertTrue(is_endpoint_allowed("POST", "/v1.51/build"))
 
     def test_blocked_image_from_src(self):
         self.assertFalse(
@@ -60,8 +63,10 @@ class TestEndpointAllowlist(unittest.TestCase):
         # Agent could create unrestricted network — block /networks/create
         self.assertFalse(is_endpoint_allowed("POST", "/v1.51/networks/create"))
 
-    def test_blocked_volumes_create(self):
-        self.assertFalse(is_endpoint_allowed("POST", "/v1.51/volumes/create"))
+    def test_volumes_allowed(self):
+        # Named volumes are safe (no host paths) — needed for docker-compose
+        self.assertTrue(is_endpoint_allowed("POST", "/v1.51/volumes/create"))
+        self.assertTrue(is_endpoint_allowed("GET", "/v1.51/volumes"))
 
     def test_blocked_other_user_network(self):
         self.assertFalse(is_endpoint_allowed("GET", "/v1.51/networks/iso-click", "acm"))
