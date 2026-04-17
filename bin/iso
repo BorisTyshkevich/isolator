@@ -583,9 +583,10 @@ def set_ownership(name):
         run(["chown", f"{name}:{ISOLATOR_GROUP}", str(claude_dir)])
         run(["chmod", "700", str(claude_dir)])
 
+    # plugins — user-owned (Claude Code clones marketplaces here)
     plugins_dir = home / ".claude" / "plugins"
     if plugins_dir.exists():
-        run(["chown", "-R", "root:wheel", str(plugins_dir)])
+        run(["chown", "-R", f"{name}:{ISOLATOR_GROUP}", str(plugins_dir)])
         run(["chmod", "-R", "755", str(plugins_dir)])
 
     cj = home / ".claude.json"
