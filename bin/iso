@@ -362,7 +362,7 @@ def copy_claude_config(name, source_user):
             dst_skills.unlink()
         os.symlink(target, dst_skills)
 
-    # plugins
+    # plugins — copy and fix hardcoded paths in JSON configs
     src_plugins = source_home / ".claude" / "plugins"
     dst_plugins = claude_dir / "plugins"
     if src_plugins.is_dir():
@@ -370,6 +370,15 @@ def copy_claude_config(name, source_user):
         if dst_plugins.exists():
             shutil.rmtree(dst_plugins)
         shutil.copytree(src_plugins, dst_plugins)
+        # Rewrite source-user paths to sandbox-user paths in JSON configs
+        for json_file in dst_plugins.glob("*.json"):
+            try:
+                content = json_file.read_text()
+                if str(source_home) in content:
+                    content = content.replace(str(source_home), str(home))
+                    json_file.write_text(content)
+            except (OSError, UnicodeDecodeError):
+                pass
 
 
 CODEX_CONFIG_OVERRIDES = {
