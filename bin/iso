@@ -268,15 +268,38 @@ def copy_shell_config(name, source_user, shell_type):
             rc_path.write_text(content + source_line)
 
 
-def copy_claude_md(name):
-    """Copy sandbox CLAUDE.md to user's ~/.claude/CLAUDE.md."""
-    if CLAUDE_MD_PATH.exists():
-        home = Path(f"/Users/{name}")
-        claude_dir = home / ".claude"
-        claude_dir.mkdir(exist_ok=True)
-        dst = claude_dir / "CLAUDE.md"
-        shutil.copy2(CLAUDE_MD_PATH, dst)
-        print(f"  Copied CLAUDE.md to .claude/")
+ISOLATOR_MARKER = "<!-- isolator-sandbox-instructions -->"
+
+
+def copy_claude_md(name, source_user):
+    """Merge admin's CLAUDE.md with isolator sandbox instructions.
+
+    If source user has ~/.claude/CLAUDE.md, copy it and append isolator
+    instructions (marked with a comment so we can replace on re-run).
+    If no source CLAUDE.md, use isolator template only.
+    """
+    if not CLAUDE_MD_PATH.exists():
+        return
+    home = Path(f"/Users/{name}")
+    claude_dir = home / ".claude"
+    claude_dir.mkdir(exist_ok=True)
+    dst = claude_dir / "CLAUDE.md"
+
+    # Source user's CLAUDE.md (admin's custom instructions)
+    source_md = Path(f"/Users/{source_user}/.claude/CLAUDE.md")
+    if source_md.exists():
+        content = source_md.read_text()
+        # Strip any previous isolator block
+        if ISOLATOR_MARKER in content:
+            content = content[:content.index(ISOLATOR_MARKER)].rstrip()
+    else:
+        content = ""
+
+    # Append isolator sandbox instructions
+    isolator_block = CLAUDE_MD_PATH.read_text()
+    merged = f"{content}\n\n{ISOLATOR_MARKER}\n{isolator_block}" if content else isolator_block
+    dst.write_text(merged)
+    print(f"  Merged CLAUDE.md (admin + isolator sandbox instructions)")
 
 
 def copy_claude_config(name, source_user):
@@ -702,7 +725,7 @@ def cmd_create(name, config, from_user=None):
 
     setup_home(name, admin)
     copy_shell_config(name, source, shell_type)
-    copy_claude_md(name)
+    copy_claude_md(name, source)
     copy_claude_config(name, source)
     copy_codex_config(name, source)
     inject_auth_keyfiles(name, user_config)
