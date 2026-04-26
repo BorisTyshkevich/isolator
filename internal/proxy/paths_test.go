@@ -52,6 +52,10 @@ func TestIsPathAllowed(t *testing.T) {
 		{"/var/run/docker.sock", false, "docker socket"},
 		{"/", false, "root"},
 		{"/Users/Workspaces", false, "parent of all workspaces"},
+		// Proxy socket exception — own socket allowed, others rejected.
+		{"/var/run/isolator-docker/acm.sock", true, "own proxy sock"},
+		{"/var/run/isolator-docker/other.sock", false, "other user's proxy sock"},
+		{"/var/run/isolator-docker", false, "proxy sock dir itself"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.note+":"+tc.path, func(t *testing.T) {
@@ -60,6 +64,59 @@ func TestIsPathAllowed(t *testing.T) {
 				t.Errorf("IsPathAllowed(%q,%q) = %v, want %v", tc.path, user, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestIsPathAllowedProxySockResolved verifies that the proxy socket exception
+// also matches the EvalSymlinks-resolved form. We simulate this by pointing
+// ProxySocketDir at a temp dir, creating a symlink that resolves it to a
+// different path, and verifying both the symlink path and the resolved target
+// are accepted.
+func TestIsPathAllowedProxySockResolved(t *testing.T) {
+	tmp := t.TempDir()
+	user := "acm"
+
+	// real_dir is where the actual sock lives; sym_dir is a symlink to it.
+	realDir := filepath.Join(tmp, "real")
+	symDir := filepath.Join(tmp, "sym")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realDir, symDir); err != nil {
+		t.Fatal(err)
+	}
+
+	// Touch the sock file so EvalSymlinks succeeds.
+	sockFile := filepath.Join(realDir, user+".sock")
+	if f, err := os.Create(sockFile); err != nil {
+		t.Fatal(err)
+	} else {
+		_ = f.Close()
+	}
+
+	prevDir := ProxySocketDir
+	ProxySocketDir = symDir // points at the symlink
+	t.Cleanup(func() { ProxySocketDir = prevDir })
+
+	// Literal form — uses the symlink path.
+	literal := symDir + "/" + user + ".sock"
+	if !IsPathAllowed(literal, user) {
+		t.Errorf("literal proxy sock path rejected: %q", literal)
+	}
+	// Resolved form — EvalSymlinks of the literal, what ResolvePath returns.
+	resolved, err := filepath.EvalSymlinks(literal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved == literal {
+		t.Skip("EvalSymlinks did not change the path; macOS /var symlink behavior not exercised here")
+	}
+	if !IsPathAllowed(resolved, user) {
+		t.Errorf("resolved proxy sock path rejected: %q", resolved)
+	}
+	// Other user's socket — must remain blocked even when own is allowed.
+	if IsPathAllowed(symDir+"/other.sock", user) {
+		t.Error("other user's proxy sock incorrectly allowed")
 	}
 }
 

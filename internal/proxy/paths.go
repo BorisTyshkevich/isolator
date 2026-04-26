@@ -14,6 +14,10 @@ var WorkspacesDir = "/Users/Workspaces"
 // /Users/<user>/tmp. Made overridable for tests as well.
 var UsersHomePrefix = "/Users"
 
+// ProxySocketDir is the dir holding per-user proxy sockets:
+// /var/run/isolator-docker/<user>.sock. Overridable for tests.
+var ProxySocketDir = "/var/run/isolator-docker"
+
 // Constants required across the package per §2.
 const (
 	MaxBodySize = 16 * 1024 * 1024 // 16 MB
@@ -24,6 +28,9 @@ const (
 // §9.5) is inside one of the user's allowed roots:
 //   - <WorkspacesDir>/<user> (root or subtree)
 //   - /Users/<user>/tmp     (root or subtree)
+//   - <ProxySocketDir>/<user>.sock (exact match — the user's own proxy
+//     socket, needed by Ryuk and similar docker-in-docker tools; see
+//     docs/ryuk-and-the-proxy-socket.md)
 func IsPathAllowed(path, user string) bool {
 	wsRoot := WorkspacesDir + "/" + user
 	if path == wsRoot || strings.HasPrefix(path, wsRoot+"/") {
@@ -31,6 +38,15 @@ func IsPathAllowed(path, user string) bool {
 	}
 	tmpRoot := UsersHomePrefix + "/" + user + "/tmp"
 	if path == tmpRoot || strings.HasPrefix(path, tmpRoot+"/") {
+		return true
+	}
+	literal := ProxySocketDir + "/" + user + ".sock"
+	if path == literal {
+		return true
+	}
+	// On macOS /var is a symlink to /private/var; ResolvePath of the bind
+	// source ends up at /private/var/run/... so accept the resolved form too.
+	if resolved, err := filepath.EvalSymlinks(literal); err == nil && path == resolved {
 		return true
 	}
 	return false
