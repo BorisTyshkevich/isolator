@@ -1,0 +1,266 @@
+#!/usr/bin/env python3
+"""pf-monitor — watch sandbox user outbound connections, alert on unallowed hosts.
+
+Must run as root (needs pfctl + lsof -u for other users).
+
+Strategy:
+  1. Read /etc/isolator/config.toml for user→uid mappings and allowed hosts.
+  2. Load current pf tables (resolving what IPs are actually allowed per user).
+  3. Poll `lsof -i` every 3 s for sandbox UIDs; also watch pfctl block-rule
+     packet counters so a counter bump triggers an immediate extra lsof sweep.
+  4. For each new (uid, remote_ip) pair:
+       - Reverse-resolve hostname.
+       - If IP is NOT in that user's pf table → print loud alert.
+       - Print suggestion to add host to config.
+
+Limitations:
+  - pf LOG in anchors is broken on macOS Sonoma — we can't directly read
+    pflog0 for blocked packets.
+  - dtrace syscall provider is SIP-blocked.
+  - Blocked connections appear briefly as SYN_SENT; our 3 s poll may miss them.
+    The pfctl counter bump shortens that gap by triggering an extra sweep.
+
+Usage:
+    sudo pf-monitor            # interactive; Ctrl-C to stop
+    sudo pf-monitor --quiet    # only print UNALLOWED alerts
+"""
+
+import ipaddress
+import os
+import re
+import socket
+import subprocess
+import sys
+import time
+import tomllib
+from datetime import datetime
+from pathlib import Path
+
+CONFIG_PATH = Path("/etc/isolator/config.toml")
+POLL_INTERVAL = 3  # seconds between lsof sweeps
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+def ts():
+    return datetime.now().strftime("%H:%M:%S")
+
+
+def log(msg):
+    print(f"[{ts()}] {msg}", flush=True)
+
+
+def load_config():
+    with open(CONFIG_PATH, "rb") as f:
+        return tomllib.load(f)
+
+
+def is_unrestricted(user_cfg):
+    return "*" in user_cfg.get("hosts", [])
+
+
+def get_pf_table_networks(anchor, table_name):
+    """Return list of ip_network objects currently in a pf table (empty list if missing)."""
+    r = subprocess.run(
+        ["pfctl", "-a", anchor, "-t", table_name, "-T", "show"],
+        capture_output=True, text=True,
+    )
+    nets = []
+    for line in r.stdout.splitlines():
+        entry = line.strip()
+        if not entry:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            pass
+    return nets
+
+
+def ip_in_table(ip_str, networks):
+    """Return True if ip_str falls within any network in the list."""
+    try:
+        addr = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    return any(addr in net for net in networks)
+
+
+def get_block_packet_count(anchor):
+    """Sum packet counts across all block rules in the isolator anchor."""
+    r = subprocess.run(
+        ["pfctl", "-a", anchor, "-s", "rules", "-v"],
+        capture_output=True, text=True,
+    )
+    total = 0
+    in_block = False
+    for line in r.stdout.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("block "):
+            in_block = True
+        elif in_block:
+            m = re.search(r"Packets:\s+(\d+)", stripped)
+            if m:
+                total += int(m.group(1))
+            in_block = False
+    return total
+
+
+def parse_lsof_connections(uid_csv):
+    """Run lsof -i for the given UID CSV and return list of connection dicts."""
+    r = subprocess.run(
+        ["lsof", "-i", "-n", "-P", "-u", uid_csv, "-F", "pcuLn"],
+        capture_output=True, text=True, timeout=15,
+    )
+    conns = []
+    cur: dict = {}
+    for line in r.stdout.splitlines():
+        if not line:
+            continue
+        tag, val = line[0], line[1:]
+        if tag == "p":
+            cur = {"pid": val}
+        elif tag == "c":
+            cur["cmd"] = val
+        elif tag == "u":
+            cur["uid"] = int(val)
+        elif tag == "L":
+            cur["login"] = val
+        elif tag == "n" and "->" in val:
+            # "local_addr:port->remote_addr:port (STATE)"
+            state_m = re.search(r"\((\w+)\)$", val)
+            state = state_m.group(1) if state_m else "UNKNOWN"
+            remote_part = val.split("->", 1)[1]
+            remote_part = re.sub(r"\s*\(\w+\)$", "", remote_part).strip()
+
+            if remote_part.startswith("["):
+                m = re.match(r"\[(.+)\]:(\d+)$", remote_part)
+                if m:
+                    cur["remote_ip"] = m.group(1)
+                    cur["remote_port"] = int(m.group(2))
+            else:
+                m = re.match(r"(.+):(\d+)$", remote_part)
+                if m:
+                    cur["remote_ip"] = m.group(1)
+                    cur["remote_port"] = int(m.group(2))
+
+            cur["state"] = state
+            if "uid" in cur and "remote_ip" in cur:
+                conns.append(dict(cur))
+    return conns
+
+
+def resolve_ip(ip):
+    try:
+        return socket.gethostbyaddr(ip)[0]
+    except Exception:
+        return ip
+
+
+# ── Main ─────────────────────────────────────────────────────────────────────
+
+def main():
+    if os.geteuid() != 0:
+        print("pf-monitor: must run as root — try: sudo pf-monitor", file=sys.stderr)
+        sys.exit(1)
+
+    quiet = "--quiet" in sys.argv
+
+    config = load_config()
+    anchor = "isolator"
+    users = config.get("users", {})
+    admin = config.get("admin", "")
+
+    # Build uid→name map for restricted users only
+    uid_to_name: dict[int, str] = {}
+    pf_tables: dict[str, set] = {}      # name → set of allowed IPs
+    restricted_names: list[str] = []
+
+    for name, ucfg in users.items():
+        if is_unrestricted(ucfg):
+            log(f"  {name}: unrestricted (skipping)")
+            continue
+        uid = ucfg["uid"]
+        uid_to_name[uid] = name
+        restricted_names.append(name)
+
+    if not uid_to_name:
+        log("No restricted users found — nothing to monitor.")
+        sys.exit(0)
+
+    log(f"Loading pf tables for: {', '.join(restricted_names)}")
+    for name in restricted_names:
+        nets = get_pf_table_networks(anchor, f"{name}-allowed")
+        pf_tables[name] = nets
+        log(f"  {name}: {len(nets)} entries (IPs + subnets)")
+
+    uid_csv = ",".join(str(u) for u in uid_to_name)
+    log(f"Polling lsof every {POLL_INTERVAL}s for UIDs: {uid_csv}")
+    log("Press Ctrl-C to stop.\n")
+
+    seen: set = set()          # (uid, remote_ip, remote_port) — don't repeat
+    prev_block_count = get_block_packet_count(anchor)
+
+    def sweep(label="poll"):
+        nonlocal prev_block_count
+        try:
+            conns = parse_lsof_connections(uid_csv)
+        except subprocess.TimeoutExpired:
+            log("lsof timed out — skipping sweep")
+            return
+
+        for conn in conns:
+            uid = conn.get("uid")
+            if uid not in uid_to_name:
+                continue  # ignore root / non-sandbox processes
+            rip = conn.get("remote_ip", "")
+            rport = conn.get("remote_port", 0)
+            state = conn.get("state", "?")
+
+            # Skip loopback and link-local
+            if not rip or rip in ("127.0.0.1", "::1") or rip.startswith("169.254"):
+                continue
+
+            key = (uid, rip, rport)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            name = uid_to_name.get(uid, f"uid-{uid}")
+            hostname = resolve_ip(rip)
+            allowed = ip_in_table(rip, pf_tables.get(name, []))
+
+            if allowed:
+                if not quiet:
+                    log(f"ALLOWED   {name:10s} {hostname} ({rip}:{rport})  [{state}]")
+            else:
+                # Loud alert for unallowed connection
+                print(flush=True)
+                print("=" * 70, flush=True)
+                print(f"  *** UNALLOWED connection detected ({ts()}) ***", flush=True)
+                print(f"  User:    {name} (uid={uid})", flush=True)
+                print(f"  Process: {conn.get('cmd', '?')} (pid={conn.get('pid', '?')})", flush=True)
+                print(f"  Host:    {hostname}", flush=True)
+                print(f"  Remote:  {rip}:{rport}  [{state}]", flush=True)
+                print(f"  pf table {name}-allowed does NOT contain this IP.", flush=True)
+                print(flush=True)
+                print(f"  To allow: add '{hostname}' to [users.{name}] hosts in", flush=True)
+                print(f"            /etc/isolator/config.toml, then run: sudo iso pf", flush=True)
+                print("=" * 70, flush=True)
+                print(flush=True)
+
+    while True:
+        # Check block counter — a bump means pf dropped something recently
+        block_count = get_block_packet_count(anchor)
+        if block_count > prev_block_count:
+            prev_block_count = block_count
+            sweep("block-triggered")  # extra sweep, no log spam
+
+        sweep()
+        time.sleep(POLL_INTERVAL)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\npf-monitor stopped.", flush=True)

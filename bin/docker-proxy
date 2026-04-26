@@ -575,6 +575,20 @@ def handle(client, upstream_path, user, expected_uid, check_peer=True):
                 log(user, "BLOCKED: duplicate Content-Length (smuggling)")
                 return
 
+            # ── Large binary endpoints: relay raw without buffering ──
+            # /build contexts and /images/load tarballs can be hundreds of MB.
+            # Bodies are opaque tar streams — inspection is not needed.
+            # Forward the already-buffered request bytes, then relay bidirectionally.
+            # Works for both Transfer-Encoding: chunked and Content-Length requests.
+            _LARGE_BODY_PATHS = ("/build", "/images/load")
+            if any(s in path for s in _LARGE_BODY_PATHS):
+                upstream.sendall(buf[:hdr_end] + after_hdr)
+                t = threading.Thread(target=relay, args=(upstream, client), daemon=True)
+                t.start()
+                relay(client, upstream)
+                t.join(timeout=5)
+                return
+
             # Read body (chunked or content-length)
             if is_chunked:
                 # Read until terminal chunk, then decode. Rewrite header as Content-Length
@@ -608,8 +622,7 @@ def handle(client, upstream_path, user, expected_uid, check_peer=True):
                 hdr = "\r\n".join(new_hdr_lines) + "\r\n\r\n"
             else:
                 # Reject oversize bodies — we buffer in memory, OOM defense.
-                # /build can stream large context tars, so allow it via raw passthrough later.
-                if content_length > MAX_BODY_SIZE and "/build" not in path:
+                if content_length > MAX_BODY_SIZE:
                     err = json.dumps({"message": f"isolator: request body too large ({content_length} bytes)"})
                     client.sendall((
                         f"HTTP/1.1 413 Payload Too Large\r\nContent-Type: application/json\r\n"
@@ -670,7 +683,7 @@ def handle(client, upstream_path, user, expected_uid, check_peer=True):
                 upstream.sendall(buf[:hdr_end] + body)
 
             # For streaming endpoints: switch to raw bidirectional relay
-            # and stop parsing HTTP — these don't return until done
+            # and stop parsing HTTP — these don't return until done.
             if any(s in path for s in ["/attach", "/exec", "/wait", "/logs"]):
                 if leftover:
                     upstream.sendall(leftover)
