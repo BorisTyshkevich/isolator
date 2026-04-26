@@ -239,17 +239,28 @@ OrbStack's *own* Docker daemon socket appears to work through a bind-mount
 because OrbStack runs a TCP-to-Unix bridge on macOS that forwards into the
 VM. Our proxy doesn't have that bridge.
 
-### Solution: TLS-protected TCP listener (option 3, implemented)
+### Compatibility matrix (read this first)
 
-The proxy listens on TLS-protected TCP loopback in addition to its Unix
-socket. Ryuk inside the container reaches it via `host.docker.internal:PORT`,
-which OrbStack and Docker Desktop both route to the macOS host. Mutual TLS
-provides authentication: each user's proxy has its own CA, so a container
-running as user A cannot reach user B's TCP port without B's certs.
+Ryuk support depends on **which testcontainers library** you use AND which
+**host platform** you're on. They behave differently:
 
-#### What `iso` sets up automatically
+| Library              | Linux                 | macOS (OrbStack / Docker Desktop)                |
+|----------------------|-----------------------|--------------------------------------------------|
+| testcontainers-java  | bind-mount path works | TLS TCP path works (env-var setup, see below)    |
+| testcontainers-go    | bind-mount path works | **Unsupported today** (see "macOS + Go" below)   |
 
-When `iso <user> ...` runs, the proxy starts with:
+The short version: if you're on Linux, the path-check exception is enough
+and you don't need to do anything special — Ryuk just works. On macOS the
+story splits by library.
+
+### macOS + testcontainers-java: TLS TCP listener
+
+testcontainers-java honors `TESTCONTAINERS_RYUK_DOCKER_SOCKET_OVERRIDE`,
+which lets us redirect Ryuk to a TCP+TLS endpoint instead of the bind-mounted
+Unix socket.
+
+**What `iso` sets up automatically.** When `iso <user> ...` runs, the proxy
+starts with:
 
 - A Unix socket at `/var/run/isolator-docker/<user>.sock` (existing).
 - A TCP listener on `127.0.0.1:<port>` where `port = 40000 + (uid - 600)`.
@@ -265,9 +276,7 @@ Cert generation is one-shot via `docker-proxy-go --init-tls`. iso runs that
 the first time it sees a missing `ca.pem`, then chowns the dir to the user
 so testcontainers can read the files for bind-mounting.
 
-#### What testcontainers users need to set
-
-For Ryuk to use the TLS endpoint, set these env vars in the test process:
+**Env vars to set in the test process.** For Ryuk to use the TLS endpoint:
 
 ```bash
 # Test process keeps using the fast Unix socket.
@@ -280,13 +289,11 @@ DOCKER_CERT_PATH=/Users/altinity/.isolator-docker-proxy
 TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal
 ```
 
-testcontainers will bind-mount `DOCKER_CERT_PATH` into the Ryuk container at
-the same path, set `DOCKER_HOST=tcp://host.docker.internal:40006` inside
+testcontainers-java bind-mounts `DOCKER_CERT_PATH` into the Ryuk container at
+the same path, sets `DOCKER_HOST=tcp://host.docker.internal:40006` inside
 Ryuk, and Ryuk's standard Docker client library handles the TLS handshake.
 
-#### Why this is safe
-
-The TLS layer is the auth boundary, not the port number:
+**Why this is safe.** The TLS layer is the auth boundary, not the port number:
 
 | Attack                                            | Outcome                                       |
 |---------------------------------------------------|-----------------------------------------------|
@@ -297,38 +304,74 @@ The TLS layer is the auth boundary, not the port number:
 
 A successful connection to user A's TLS endpoint requires:
 1. A client cert signed by user A's CA, AND
-2. The CA private key is root-only on the macOS host.
+2. The CA private key, which is root-only on the macOS host.
 
 Once authenticated, the container's docker client gets the same proxy-bounded
 privileges as the host user — same gate, same policy, same ownership label.
 
-### What this means for security review
+### macOS + testcontainers-go: unsupported today
 
-The path-check exception is correct and safe on its own merits — a container
-with the proxy socket bind-mounted gains no privileges beyond what the user
-already has. Whether the connection actually reaches the proxy depends on
-the host platform:
+testcontainers-go has **no equivalent** of `TESTCONTAINERS_RYUK_DOCKER_SOCKET_OVERRIDE`.
+Its reaper code (`reaper.go`) hard-codes a Unix-socket bind-mount regardless
+of `DOCKER_HOST` scheme:
 
-| Platform                         | Bind allowed | Connection works | Path used                                  |
-|----------------------------------|--------------|------------------|--------------------------------------------|
-| Linux (host Docker, rootless)    | yes          | yes              | bind-mounted Unix socket                   |
-| macOS (OrbStack)                 | yes          | no (VM boundary) | TLS TCP via `host.docker.internal`         |
-| macOS (Docker Desktop)           | yes          | no (VM boundary) | TLS TCP via `host.docker.internal`         |
+```go
+hc.Binds = []string{dockerHostMount + ":/var/run/docker.sock"}
+```
 
-On Linux the bind-mount path works directly; on macOS the proxy's TLS TCP
-listener is the working path.
+Setting the four env vars from the Java recipe **does not work**:
 
-## If Ryuk failures show up after this fix
+- `TESTCONTAINERS_RYUK_DOCKER_SOCKET_OVERRIDE` is silently ignored — Go has no such variable.
+- `DOCKER_TLS_VERIFY=1` makes the test process's *own* docker client try
+  HTTPS over the Unix socket, which panics:
+  ```
+  panic: docker info: Get "https://%2Fvar%2Frun%2Fisolator-docker%2Faltinity.sock/v1.51/info":
+  http: server gave HTTP response to HTTPS client
+  ```
 
-If a container with the proxy socket bind-mounted still fails, the failure
-mode tells you where to look:
+Without the env vars, testcontainers-go falls back to bind-mount, which our
+proxy now allows (commit `c3a55c1`) but which doesn't actually work on macOS
+because Unix sockets can't traverse the OrbStack VM boundary (the bind makes
+the file visible inside the container, but `connect()` returns
+`ECONNREFUSED`).
+
+**Two paths forward:**
+
+1. **Upstream fix** — testcontainers-go [#3662](https://github.com/testcontainers/testcontainers-go/issues/3662)
+   proposes adding TCP/TLS daemon-host support to the reaper, paralleling
+   what testcontainers-java already supports. Multi-week timeline at best.
+2. **In-proxy reaper** — implement Ryuk-equivalent cleanup *inside* the
+   docker-proxy itself, so testcontainers can run with `TESTCONTAINERS_RYUK_DISABLED=true`
+   while still getting reliable cleanup. This is the unblock for our use
+   case today; it removes the third-party Ryuk dependency entirely. Design
+   discussion in progress (see commit log).
+
+Until either lands, testcontainers-go users on macOS should set
+`TESTCONTAINERS_RYUK_DISABLED=true` and accept that crashed test runs may
+leak containers. The proxy's container-list filtering still scopes leaks to
+the user's own namespace, so a periodic
+`docker rm -f $(docker ps -aq)` from inside the user's session is a safe
+manual cleanup.
+
+## Diagnosing Ryuk failures
+
+Failure mode → where to look:
 
 - **`bind mount not allowed`** — path check rejected the bind. Confirm the
   path is exactly `/var/run/isolator-docker/<your-user>.sock`, no trailing
   slash, no different user.
-- **`Cannot connect to the Docker daemon`** (from inside container) — the
-  bind worked but the connection didn't reach the proxy. On macOS this is
-  the VM-boundary issue above; use one of the three workarounds.
+- **`Cannot connect to the Docker daemon`** (from inside the container) —
+  the bind worked but the connection didn't reach the proxy. On macOS this
+  is the VM-boundary issue: containers can't connect to host-side Unix
+  sockets even when the file is visible. Use the TLS TCP path
+  (testcontainers-java) or wait on the in-proxy reaper / upstream
+  testcontainers-go #3662.
+- **`http: server gave HTTP response to HTTPS client`** (test process
+  panic) — `DOCKER_TLS_VERIFY=1` is set globally and Go's docker client is
+  trying to TLS-handshake over a Unix socket. This happens specifically
+  with testcontainers-go when the four-env-var Java recipe is applied. Drop
+  `DOCKER_TLS_VERIFY=1` from the test process; it can't be scoped to
+  Ryuk-only on Go.
 - **`isolator: <something>` errors visible to Ryuk** — connection reached
   the proxy and the proxy is enforcing policy. Look in the proxy log
   (`/var/run/isolator-docker/<user>.log`) for the exact rule that fired.
@@ -336,6 +379,8 @@ mode tells you where to look:
 ## References
 
 - testcontainers Ryuk source: https://github.com/testcontainers/moby-ryuk
+- testcontainers-go upstream issue (TCP/TLS Ryuk): https://github.com/testcontainers/testcontainers-go/issues/3662
+- testcontainers-java parallel issue: https://github.com/testcontainers/testcontainers-java/issues/9137
 - The path check: `internal/proxy/paths.go`, `IsPathAllowed`
 - The substring check that still fires for real docker sockets:
   `internal/proxy/create.go`, look for `docker.sock`
