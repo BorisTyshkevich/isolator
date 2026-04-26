@@ -78,8 +78,9 @@ DANGEROUS_HOST_CONFIG = {
     "CapAdd", "CapDrop", "SecurityOpt", "PidMode", "IpcMode", "UTSMode",
     "UsernsMode", "CgroupnsMode", "CgroupParent", "Cgroup", "Runtime",
     "Sysctls", "Ulimits", "OomScoreAdj", "OomKillDisable",
-    "ExtraHosts", "DNS", "DNSOptions", "DNSSearch",  # DNS/host spoofing
+    "DNS", "DNSOptions", "DNSSearch",  # DNS spoofing
     "Links",  # legacy, redundant — disallow
+    # ExtraHosts: validated separately — only host.docker.internal:host-gateway allowed
 }
 
 _CONTAINER_ACTION_RE = re.compile(
@@ -111,6 +112,10 @@ def is_endpoint_allowed(method, path, user="acm"):
         return True
     # Unversioned /info — Go Docker SDK calls this before version negotiation
     if method == "GET" and plain == "/info":
+        return True
+    # docker login — stores credentials in ~/.docker/config.json; safe because
+    # docker push is not in the allowlist so exfiltration via registry is blocked
+    if method == "POST" and re.match(rf"^({V})?/auth$", plain):
         return True
 
     # ── Containers ──
@@ -161,6 +166,12 @@ def is_endpoint_allowed(method, path, user="acm"):
     if method == "POST" and re.match(rf"^{V}/build$", plain):
         return True
 
+    # ── Push ──
+    # Gated on network egress (pf allowlist) — proxy allows the endpoint,
+    # pf controls which registries are actually reachable.
+    if method == "POST" and re.match(rf"^{V}/images/[a-zA-Z0-9_./:@%-]+/push$", plain):
+        return True
+
     # ── Volumes ──
     if re.match(rf"^{V}/volumes(/.*)?$", plain):
         return True
@@ -191,6 +202,11 @@ def check_create(body_bytes, user):
         val = hc.get(field)
         if val:
             return False, f"{field} is not allowed", body_bytes
+
+    # ExtraHosts: only host.docker.internal:host-gateway (needed by e2e test frameworks)
+    for entry in hc.get("ExtraHosts") or []:
+        if entry.strip() != "host.docker.internal:host-gateway":
+            return False, f"ExtraHosts entry {entry!r} not allowed", body_bytes
 
     # NetworkMode: only iso-<user> network (bridge has no egress filtering).
     # Empty/default/bridge are allowed but will be dropped by iptables — the
@@ -526,22 +542,24 @@ def handle(client, upstream_path, user, expected_uid, check_peer=True):
                 log(user, f"BLOCKED endpoint: {method} {path}")
                 return
 
-            # Reject smuggling vectors: Transfer-Encoding and duplicate Content-Length
+            # Smuggling defense: decode chunked bodies in-proxy, strip Transfer-Encoding,
+            # rewrite as Content-Length. Duplicate Content-Length is still hard-blocked.
             cl_count = 0
             content_length = 0
+            is_chunked = False
             for line in hdr.split("\r\n"):
                 low = line.lower()
                 if low.startswith("transfer-encoding:"):
-                    err = json.dumps({"message": "isolator: Transfer-Encoding not allowed"})
-                    resp = (
-                        f"HTTP/1.1 400 Bad Request\r\n"
-                        f"Content-Type: application/json\r\n"
-                        f"Content-Length: {len(err)}\r\n"
-                        f"Connection: close\r\n\r\n{err}"
-                    ).encode()
-                    client.sendall(resp)
-                    log(user, "BLOCKED: Transfer-Encoding (smuggling)")
-                    return
+                    if "chunked" in low:
+                        is_chunked = True
+                    else:
+                        err = json.dumps({"message": "isolator: Transfer-Encoding not allowed"})
+                        client.sendall((
+                            f"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n"
+                            f"Content-Length: {len(err)}\r\nConnection: close\r\n\r\n{err}"
+                        ).encode())
+                        log(user, "BLOCKED: Transfer-Encoding (non-chunked)")
+                        return
                 if low.startswith("content-length:"):
                     cl_count += 1
                     content_length = int(line.split(":", 1)[1].strip())
@@ -557,31 +575,55 @@ def handle(client, upstream_path, user, expected_uid, check_peer=True):
                 log(user, "BLOCKED: duplicate Content-Length (smuggling)")
                 return
 
-            # Reject oversize bodies — we buffer in memory, OOM defense.
-            # /build can stream large context tars, so allow it via raw passthrough later.
-            if content_length > MAX_BODY_SIZE and "/build" not in path:
-                err = json.dumps({"message": f"isolator: request body too large ({content_length} bytes)"})
-                resp = (
-                    f"HTTP/1.1 413 Payload Too Large\r\n"
-                    f"Content-Type: application/json\r\n"
-                    f"Content-Length: {len(err)}\r\n"
-                    f"Connection: close\r\n\r\n{err}"
-                ).encode()
-                client.sendall(resp)
-                log(user, f"BLOCKED: oversize body {content_length}")
-                return
-
-            # Read body
-            body = after_hdr[:content_length]
-            leftover = after_hdr[content_length:]
-            while len(body) < content_length:
-                chunk = client.recv(65536)
-                if not chunk:
+            # Read body (chunked or content-length)
+            if is_chunked:
+                # Read until terminal chunk, then decode. Rewrite header as Content-Length
+                # so the rest of the pipeline sees a normal request — no smuggling vector.
+                raw = after_hdr
+                while not (b"\r\n0\r\n" in raw or raw.endswith(b"0\r\n\r\n")):
+                    chunk = client.recv(65536)
+                    if not chunk:
+                        break
+                    raw += chunk
+                try:
+                    body = decode_chunked_body(raw)
+                except ValueError as e:
+                    client.sendall(json_error("400 Bad Request", f"chunked decode error: {e}"))
                     return
-                needed = content_length - len(body)
-                body += chunk[:needed]
-                if len(chunk) > needed:
-                    leftover += chunk[needed:]
+                content_length = len(body)
+                leftover = b""
+                # Strip Transfer-Encoding, set Content-Length in header
+                new_hdr_lines = []
+                for line in hdr.rstrip("\r\n").split("\r\n"):
+                    if line.lower().startswith("transfer-encoding:"):
+                        continue
+                    if line.lower().startswith("content-length:"):
+                        continue
+                    new_hdr_lines.append(line)
+                new_hdr_lines.append(f"Content-Length: {content_length}")
+                hdr = "\r\n".join(new_hdr_lines) + "\r\n\r\n"
+            else:
+                # Reject oversize bodies — we buffer in memory, OOM defense.
+                # /build can stream large context tars, so allow it via raw passthrough later.
+                if content_length > MAX_BODY_SIZE and "/build" not in path:
+                    err = json.dumps({"message": f"isolator: request body too large ({content_length} bytes)"})
+                    client.sendall((
+                        f"HTTP/1.1 413 Payload Too Large\r\nContent-Type: application/json\r\n"
+                        f"Content-Length: {len(err)}\r\nConnection: close\r\n\r\n{err}"
+                    ).encode())
+                    log(user, f"BLOCKED: oversize body {content_length}")
+                    return
+
+                body = after_hdr[:content_length]
+                leftover = after_hdr[content_length:]
+                while len(body) < content_length:
+                    chunk = client.recv(65536)
+                    if not chunk:
+                        return
+                    needed = content_length - len(body)
+                    body += chunk[:needed]
+                    if len(chunk) > needed:
+                        leftover += chunk[needed:]
 
             # Inspect container create — and rewrite paths to prevent TOCTOU
             if method == "POST" and "/containers/create" in path:

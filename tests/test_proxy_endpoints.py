@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for docker-proxy endpoint allowlist."""
 
+import json
 import unittest
 from pathlib import Path
 
@@ -10,6 +11,11 @@ _proxy_ns = {}
 exec(compile(_proxy_code, "docker-proxy", "exec"), _proxy_ns)
 
 is_endpoint_allowed = _proxy_ns["is_endpoint_allowed"]
+check_create = _proxy_ns["check_create"]
+
+
+def make_create_body(**host_config):
+    return json.dumps({"HostConfig": host_config}).encode()
 
 
 class TestEndpointAllowlist(unittest.TestCase):
@@ -31,6 +37,11 @@ class TestEndpointAllowlist(unittest.TestCase):
 
     def test_version(self):
         self.assertTrue(is_endpoint_allowed("GET", "/v1.51/version"))
+
+    def test_auth(self):
+        # docker login — safe because docker push is blocked
+        self.assertTrue(is_endpoint_allowed("POST", "/v1.51/auth"))
+        self.assertTrue(is_endpoint_allowed("POST", "/auth"))
 
     def test_system_df(self):
         self.assertTrue(is_endpoint_allowed("GET", "/v1.51/system/df"))
@@ -72,13 +83,19 @@ class TestEndpointAllowlist(unittest.TestCase):
         # testcontainers needs image list
         self.assertTrue(is_endpoint_allowed("GET", "/v1.51/images/json"))
 
+    def test_image_push(self):
+        # push gated on pf egress allowlist, not proxy
+        self.assertTrue(is_endpoint_allowed("POST", "/v1.51/images/ghcr.io%2Faltinity%2Faltinity-mcp:latest/push"))
+        self.assertTrue(is_endpoint_allowed("POST", "/v1.51/images/alpine/push"))
+
     def test_blocked_image_from_src(self):
         self.assertFalse(
             is_endpoint_allowed("POST", "/v1.51/images/create?fromSrc=https://evil.example/payload.tar")
         )
 
-    def test_blocked_image_push(self):
-        self.assertFalse(is_endpoint_allowed("POST", "/v1.51/images/evil/push"))
+    def test_image_push_allowed(self):
+        # push is allowed at proxy level; pf egress controls which registries are reachable
+        self.assertTrue(is_endpoint_allowed("POST", "/v1.51/images/evil/push"))
 
     # ── Networks ──
 
@@ -133,6 +150,36 @@ class TestEndpointAllowlist(unittest.TestCase):
     def test_blocked_unknown(self):
         self.assertFalse(is_endpoint_allowed("GET", "/v1.51/foo/bar"))
         self.assertFalse(is_endpoint_allowed("POST", "/random"))
+
+
+class TestContainerCreate(unittest.TestCase):
+    """Verify check_create validation."""
+
+    def test_extra_hosts_allowed(self):
+        body = make_create_body(ExtraHosts=["host.docker.internal:host-gateway"])
+        ok, reason, _ = check_create(body, "acm")
+        self.assertTrue(ok, reason)
+
+    def test_extra_hosts_empty(self):
+        body = make_create_body(ExtraHosts=[])
+        ok, reason, _ = check_create(body, "acm")
+        self.assertTrue(ok, reason)
+
+    def test_extra_hosts_blocked_arbitrary(self):
+        body = make_create_body(ExtraHosts=["evil.internal:1.2.3.4"])
+        ok, _, _ = check_create(body, "acm")
+        self.assertFalse(ok)
+
+    def test_extra_hosts_blocked_mixed(self):
+        # host.docker.internal is fine but extra arbitrary entry must be blocked
+        body = make_create_body(ExtraHosts=["host.docker.internal:host-gateway", "evil:1.2.3.4"])
+        ok, _, _ = check_create(body, "acm")
+        self.assertFalse(ok)
+
+    def test_privileged_blocked(self):
+        body = make_create_body(Privileged=True)
+        ok, _, _ = check_create(body, "acm")
+        self.assertFalse(ok)
 
 
 if __name__ == "__main__":

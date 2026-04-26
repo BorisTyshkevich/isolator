@@ -241,7 +241,7 @@ def setup_home(name, admin):
     run(["chown", f"{name}:{ISOLATOR_GROUP}", str(home)])
     run(["chmod", "700", str(home)])
     run(["chmod", "+a",
-         f"{admin} allow read,write,append,delete,list,search,readattr,writeattr,readextattr,writeextattr,readsecurity,file_inherit,directory_inherit",
+         f"{admin} allow read,write,append,delete,delete_child,list,search,readattr,writeattr,readextattr,writeextattr,readsecurity,file_inherit,directory_inherit",
          str(home)])
 
 
@@ -550,7 +550,7 @@ def inject_auth_keyfiles(name, user_config):
 
 def create_skeleton(name, admin):
     home = Path(f"/Users/{name}")
-    for d in [".local/bin", ".local/lib", ".npm-global", ".cache", "tmp"]:
+    for d in [".local/bin", ".local/lib", ".cache", "tmp"]:
         (home / d).mkdir(parents=True, exist_ok=True)
     # Shared workspaces root
     WORKSPACES_DIR.mkdir(mode=0o775, exist_ok=True)
@@ -563,8 +563,13 @@ def create_skeleton(name, admin):
     user_ws.mkdir(exist_ok=True)
     run(["chown", f"{name}:{ISOLATOR_GROUP}", str(user_ws)])
     run(["chmod", "700", str(user_ws)])
+    # Sandbox user gets full inheriting ACE on their own workspace so files
+    # created there by anyone (e.g. admin bvt) remain writable by the user.
     run(["chmod", "+a",
-         f"{admin} allow read,write,append,delete,list,search,readattr,writeattr,readextattr,writeextattr,readsecurity,file_inherit,directory_inherit",
+         f"{name} allow read,write,append,delete,delete_child,list,search,readattr,writeattr,readextattr,writeextattr,readsecurity,file_inherit,directory_inherit",
+         str(user_ws)])
+    run(["chmod", "+a",
+         f"{admin} allow read,write,append,delete,delete_child,list,search,readattr,writeattr,readextattr,writeextattr,readsecurity,file_inherit,directory_inherit",
          str(user_ws)])
     print(f"  Workspace: {user_ws}")
 
@@ -622,7 +627,7 @@ def set_ownership(name):
                 run(["chown", "-R", "root:wheel", str(path)])
                 run(["chmod", "-R", "755", str(path)])
 
-    for d in [".local", ".npm-global", ".cache", "tmp"]:
+    for d in [".local", ".cache", "tmp"]:
         path = home / d
         if path.exists():
             run(["chown", "-R", f"{name}:{ISOLATOR_GROUP}", str(path)])
@@ -832,8 +837,8 @@ def generate_anchor(config):
 
     uid_list = " ".join(str(u) for u in restricted_uids)
     log_kw = "log " if any(should_log(users[n]) for n in users if users[n]["uid"] in restricted_uids) else ""
-    lines.append(f"block {log_kw}out proto tcp user {{ {uid_list} }}")
-    lines.append(f"block {log_kw}out proto udp user {{ {uid_list} }}")
+    lines.append(f"block {log_kw}out proto tcp from any to any user {{ {uid_list} }}")
+    lines.append(f"block {log_kw}out proto udp from any to any user {{ {uid_list} }}")
     lines.append("")
 
     for name, user_config in users.items():
@@ -841,12 +846,13 @@ def generate_anchor(config):
         if is_unrestricted(user_config):
             continue
         log_kw = "log " if should_log(user_config) else ""
-        lines.append(f"pass {log_kw}out proto tcp user {uid} to <{name}-allowed> port 443")
+        # macOS pf: user keyword must come after address/port specifiers
+        lines.append(f"pass {log_kw}out proto tcp from any to <{name}-allowed> port 443 user {uid}")
 
     lines.append("")
     # Allow all localhost — local services (Chrome DevTools, MCP servers, etc.)
-    lines.append(f"pass out proto tcp user {{ {uid_list} }} to 127.0.0.1")
-    lines.append(f"pass out proto udp user {{ {uid_list} }} to 127.0.0.1")
+    lines.append(f"pass out proto tcp from any to 127.0.0.1 user {{ {uid_list} }}")
+    lines.append(f"pass out proto udp from any to 127.0.0.1 user {{ {uid_list} }}")
     lines.append("")
     return "\n".join(lines)
 
