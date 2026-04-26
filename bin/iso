@@ -57,7 +57,7 @@ SSH_OPTS = ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/nul
 WORKSPACES_DIR = Path("/Users/Workspaces")
 DOCKER_PROXY_DIR = Path("/var/run/isolator-docker")  # root-only system dir
 REMOTE_PID_DIR_PATH = Path("/var/run/isolator-remote")  # root-only system dir
-DOCKER_PROXY_SCRIPT = Path(__file__).resolve().parent / "docker-proxy"
+DOCKER_PROXY_SCRIPT = Path("/usr/local/bin/docker-proxy-go")
 
 SHELL_RC_FILES = {
     "bash": [".bash_profile", ".bashrc"],
@@ -1029,7 +1029,6 @@ def ensure_docker_proxy(user):
     # Start the proxy in a single sudo invocation so the password prompt and
     # the privileged launch share the same tty/ticket context.
     proxy_cmd = " ".join([
-        shlex.quote(sys.executable),
         shlex.quote(str(DOCKER_PROXY_SCRIPT)),
         "--user", shlex.quote(user),
         "--socket", shlex.quote(str(sock)),
