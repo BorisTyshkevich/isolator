@@ -1,6 +1,33 @@
 # In-proxy reaper: design discussion
 
-> **Status:** Open design — soliciting feedback before implementation.
+> **Status (2026-04-26): declined — pivoted to a different solution.**
+>
+> The motivating problem was that testcontainers-go's Ryuk doesn't work on
+> macOS through our docker-proxy (Unix socket bind-mount fails to bridge
+> the OrbStack VM boundary). This document proposed building Ryuk-equivalent
+> cleanup into the proxy itself.
+>
+> Instead, the altinity-mcp project switched its tests to
+> [`franchb/embedded-clickhouse`](https://github.com/franchb/embedded-clickhouse),
+> which runs ClickHouse as a child process directly — no Docker, no
+> testcontainers, no Ryuk, no proxy involvement on the test path. That
+> sidesteps the entire problem class.
+>
+> The in-proxy reaper is no longer planned. The docker-proxy continues to
+> serve the sandbox security boundary for production-style workloads
+> (running container images, multi-service E2E, deployment artifact
+> testing); test workloads that only need ClickHouse skip Docker entirely.
+>
+> Document preserved as historical context: it captures the option-space
+> we considered (time-based, activity-based, session-based reaping) and
+> the trade-offs, in case a similar question arises later. The
+> embedded-clickhouse pivot is the actual decision; what follows is the
+> path not taken.
+
+---
+
+## Original framing (kept for reference)
+
 > **Goal:** Reliable container cleanup that does not depend on the
 > testcontainers Ryuk container.
 

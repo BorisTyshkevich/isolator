@@ -309,6 +309,15 @@ A successful connection to user A's TLS endpoint requires:
 Once authenticated, the container's docker client gets the same proxy-bounded
 privileges as the host user — same gate, same policy, same ownership label.
 
+### Skip-Docker alternative for ClickHouse-only tests
+
+If your test only needs a real ClickHouse instance (no other services), the
+cleanest path is to skip testcontainers and Docker entirely. Run ClickHouse
+as a child process via [`franchb/embedded-clickhouse`](https://github.com/franchb/embedded-clickhouse) —
+auto-allocated ports, downloaded-and-cached binary, ~1s cold start, no
+proxy/daemon involvement at all. Removes Ryuk from the picture by removing
+the container. Recommended for the altinity-mcp test path.
+
 ### macOS + testcontainers-go: unsupported today
 
 testcontainers-go has **no equivalent** of `TESTCONTAINERS_RYUK_DOCKER_SOCKET_OVERRIDE`.
