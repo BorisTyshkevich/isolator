@@ -56,6 +56,13 @@ func TestIsPathAllowed(t *testing.T) {
 		{"/var/run/isolator-docker/acm.sock", true, "own proxy sock"},
 		{"/var/run/isolator-docker/other.sock", false, "other user's proxy sock"},
 		{"/var/run/isolator-docker", false, "proxy sock dir itself"},
+		// TLS cert tree exception — own cert dir allowed, others rejected.
+		{"/Users/acm/.isolator-docker-proxy", true, "own cert dir"},
+		{"/Users/acm/.isolator-docker-proxy/ca.pem", true, "own ca.pem"},
+		{"/Users/acm/.isolator-docker-proxy/cert.pem", true, "own client cert"},
+		{"/Users/other/.isolator-docker-proxy", false, "other user's cert dir"},
+		{"/Users/other/.isolator-docker-proxy/ca.pem", false, "other user's ca.pem"},
+		{"/Users/acm/.isolator-docker-proxy-evil", false, "prefix attack on cert dir"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.note+":"+tc.path, func(t *testing.T) {

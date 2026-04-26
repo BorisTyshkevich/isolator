@@ -980,6 +980,49 @@ def cmd_pf(config, dry_run=False):
 
 # ── Run command ─────────────────────────────────────────────────────────────
 
+def proxy_tcp_port(user_config):
+    """Deterministic per-user TCP port for the docker-proxy TLS listener.
+
+    Sandbox UIDs start at 600. Map to ports 40000+: altinity(606) -> 40006.
+    Predictable so the user's profile/env can hardcode it without lookup.
+    """
+    return 40000 + (user_config["uid"] - BASE_UID)
+
+
+def ensure_proxy_tls_certs(user):
+    """Generate the TLS cert tree for the docker-proxy TCP listener if missing.
+
+    Cert tree lives at /Users/<user>/.isolator-docker-proxy/, owned by the
+    user (mode 0700). testcontainers reads DOCKER_CERT_PATH from this dir.
+
+    Returns the cert dir path (Path).
+    """
+    cert_dir = Path(f"/Users/{user}/.isolator-docker-proxy")
+    ca_file = cert_dir / "ca.pem"
+
+    if ca_file.exists():
+        return cert_dir
+
+    # mkdir + chown to user, then run --init-tls as root (writes files)
+    subprocess.run(["sudo", "mkdir", "-p", str(cert_dir)], capture_output=True)
+    subprocess.run(["sudo", "chown", f"{user}:isolator", str(cert_dir)],
+                   capture_output=True)
+    subprocess.run(["sudo", "chmod", "0700", str(cert_dir)], capture_output=True)
+    r = subprocess.run([
+        "sudo", str(DOCKER_PROXY_SCRIPT),
+        "--user", user,
+        "--tls-cert-dir", str(cert_dir),
+        "--init-tls",
+    ], capture_output=True, text=True)
+    if r.returncode != 0:
+        print(f"  WARNING: TLS cert init failed: {r.stderr.strip()}")
+        return None
+    # Cert files were written as root; chown them to user.
+    subprocess.run(["sudo", "chown", "-R", f"{user}:isolator", str(cert_dir)],
+                   capture_output=True)
+    return cert_dir
+
+
 def ensure_docker_proxy(user):
     """Start per-user Docker proxy if not already running."""
     # Create proxy dir as root if needed (only root can write to /var/run)
@@ -1026,14 +1069,33 @@ def ensure_docker_proxy(user):
     if not upstream.exists():
         return "unavailable"  # no Docker / no OrbStack
 
+    # Set up TLS cert tree + compute TCP port for the in-container listener.
+    # Used by tools (e.g. testcontainers' Ryuk) that need to reach the proxy
+    # from inside a container — bind-mounting a host Unix socket into a VM
+    # container doesn't work on macOS (the file is visible but connect() is
+    # refused), so we expose a TLS-protected loopback port instead.
+    config = load_config()
+    user_cfg = config.get("users", {}).get(user)
+    cert_dir = None
+    tcp_port = None
+    if user_cfg and "uid" in user_cfg:
+        tcp_port = proxy_tcp_port(user_cfg)
+        cert_dir = ensure_proxy_tls_certs(user)
+
     # Start the proxy in a single sudo invocation so the password prompt and
     # the privileged launch share the same tty/ticket context.
-    proxy_cmd = " ".join([
+    proxy_argv = [
         shlex.quote(str(DOCKER_PROXY_SCRIPT)),
         "--user", shlex.quote(user),
         "--socket", shlex.quote(str(sock)),
         "--upstream", shlex.quote(str(upstream)),
-    ])
+    ]
+    if tcp_port and cert_dir:
+        proxy_argv += [
+            "--tcp-port", str(tcp_port),
+            "--tls-cert-dir", shlex.quote(str(cert_dir)),
+        ]
+    proxy_cmd = " ".join(proxy_argv)
     subprocess.run(["sudo", "rm", "-f", str(log_file)], capture_output=True)
     redirect = f" >>{shlex.quote(str(log_file))} 2>&1"
     launch_cmd = (

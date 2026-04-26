@@ -31,6 +31,9 @@ const (
 //   - <ProxySocketDir>/<user>.sock (exact match — the user's own proxy
 //     socket, needed by Ryuk and similar docker-in-docker tools; see
 //     docs/ryuk-and-the-proxy-socket.md)
+//   - /Users/<user>/.isolator-docker-proxy (root or subtree) — the per-user
+//     TLS cert tree that Ryuk needs bind-mounted as DOCKER_CERT_PATH on
+//     macOS (where the proxy-socket bind doesn't bridge into the VM)
 func IsPathAllowed(path, user string) bool {
 	wsRoot := WorkspacesDir + "/" + user
 	if path == wsRoot || strings.HasPrefix(path, wsRoot+"/") {
@@ -38,6 +41,10 @@ func IsPathAllowed(path, user string) bool {
 	}
 	tmpRoot := UsersHomePrefix + "/" + user + "/tmp"
 	if path == tmpRoot || strings.HasPrefix(path, tmpRoot+"/") {
+		return true
+	}
+	certDir := UsersHomePrefix + "/" + user + "/.isolator-docker-proxy"
+	if path == certDir || strings.HasPrefix(path, certDir+"/") {
 		return true
 	}
 	literal := ProxySocketDir + "/" + user + ".sock"

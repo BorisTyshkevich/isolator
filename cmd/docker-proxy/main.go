@@ -4,6 +4,8 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"flag"
 	"fmt"
 	"log"
@@ -21,14 +23,60 @@ import (
 	"github.com/bvt/isolator/internal/proxy"
 )
 
+// loadServerTLS reads a CA bundle (ca.pem) and the server keypair (cert.pem,
+// key.pem) from certDir, and returns a tls.Config that requires the client
+// to present a cert signed by the CA. cert.pem here is the server cert; the
+// per-user *client* cert lives in the user's home and is not loaded by the
+// proxy — only verified.
+func loadServerTLS(certDir string) (*tls.Config, error) {
+	caPEM, err := os.ReadFile(filepath.Join(certDir, "ca.pem"))
+	if err != nil {
+		return nil, fmt.Errorf("read ca.pem: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("ca.pem contains no certs")
+	}
+	cert, err := tls.LoadX509KeyPair(filepath.Join(certDir, "server.crt"), filepath.Join(certDir, "server.key"))
+	if err != nil {
+		return nil, fmt.Errorf("load server cert/key: %w", err)
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		ClientCAs:    pool,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		MinVersion:   tls.VersionTLS12,
+	}, nil
+}
+
 func main() {
 	var (
 		username           = flag.String("user", "", "Username of the sandboxed user (required)")
 		socketPath         = flag.String("socket", "", "Path for the proxy's Unix socket (required)")
 		upstream           = flag.String("upstream", "/var/run/docker.sock", "Path to the real Docker daemon socket")
 		insecureSkipChecks = flag.Bool("insecure-skip-checks", false, "Skip parent dir ownership and user UID checks (testing)")
+		tcpPort            = flag.Int("tcp-port", 0, "Optional TCP port to listen on (loopback only); 0 disables")
+		tlsCertDir         = flag.String("tls-cert-dir", "", "When --tcp-port is set, dir holding ca.pem, server.crt, server.key (server identity) used to verify client certs. Required if --tcp-port > 0 outside --insecure-skip-checks.")
+		initTLS            = flag.Bool("init-tls", false, "Generate a fresh CA + server cert + client cert into --tls-cert-dir and exit. Idempotent: skips generation if files already exist.")
 	)
 	flag.Parse()
+
+	if *initTLS {
+		if *tlsCertDir == "" || *username == "" {
+			fmt.Fprintln(os.Stderr, "FATAL: --init-tls requires --tls-cert-dir and --user")
+			os.Exit(2)
+		}
+		if _, err := os.Stat(filepath.Join(*tlsCertDir, "ca.pem")); err == nil {
+			fmt.Fprintf(os.Stderr, "%s/ca.pem exists; nothing to do\n", *tlsCertDir)
+			return
+		}
+		if err := generateCerts(*tlsCertDir, *username); err != nil {
+			fmt.Fprintf(os.Stderr, "FATAL: cert generation: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "wrote CA + server + client certs to %s\n", *tlsCertDir)
+		return
+	}
 
 	// log to stdout per §17.
 	log.SetOutput(os.Stdout)
@@ -117,6 +165,41 @@ func main() {
 		cleanup()
 		os.Exit(0)
 	}()
+
+	// Optional: TCP listener for in-container clients (host.docker.internal:PORT).
+	// Requires TLS+mutual auth in production. With --insecure-skip-checks the TCP
+	// listener accepts plaintext (Phase A reachability testing only — never in production).
+	var tcpListener net.Listener
+	if *tcpPort > 0 {
+		l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", *tcpPort))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "FATAL: TCP listen: %v\n", err)
+			cleanup()
+			os.Exit(1)
+		}
+		if *insecureSkipChecks && *tlsCertDir == "" {
+			tcpListener = l
+			log.Printf("[%s] proxy: TCP 127.0.0.1:%d (PLAINTEXT — insecure-skip-checks only)", *username, *tcpPort)
+		} else if *tlsCertDir != "" {
+			tlsCfg, err := loadServerTLS(*tlsCertDir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "FATAL: TLS config: %v\n", err)
+				cleanup()
+				os.Exit(1)
+			}
+			tcpListener = tls.NewListener(l, tlsCfg)
+			log.Printf("[%s] proxy: TCP 127.0.0.1:%d (TLS, mutual auth, certs from %s)", *username, *tcpPort, *tlsCertDir)
+		} else {
+			fmt.Fprintln(os.Stderr, "FATAL: --tcp-port requires --tls-cert-dir (or --insecure-skip-checks for testing)")
+			cleanup()
+			os.Exit(1)
+		}
+		go func() {
+			if err := server.Serve(tcpListener); err != nil && err != http.ErrServerClosed {
+				log.Printf("[%s] ERROR: TCP server.Serve: %v", *username, err)
+			}
+		}()
+	}
 
 	if err := server.Serve(wrapped); err != nil && err != http.ErrServerClosed {
 		log.Printf("[%s] ERROR: server.Serve: %v", *username, err)
