@@ -39,7 +39,7 @@ class TestEndpointAllowlist(unittest.TestCase):
         self.assertTrue(is_endpoint_allowed("GET", "/v1.51/version"))
 
     def test_auth(self):
-        # docker login — safe because docker push is blocked
+        # docker login — safe because pf egress limits which registries are reachable
         self.assertTrue(is_endpoint_allowed("POST", "/v1.51/auth"))
         self.assertTrue(is_endpoint_allowed("POST", "/auth"))
 
@@ -93,8 +93,8 @@ class TestEndpointAllowlist(unittest.TestCase):
             is_endpoint_allowed("POST", "/v1.51/images/create?fromSrc=https://evil.example/payload.tar")
         )
 
-    def test_image_push_allowed(self):
-        # push is allowed at proxy level; pf egress controls which registries are reachable
+    def test_push_gated_by_pf_not_proxy(self):
+        # proxy allows all push targets; pf egress allowlist controls which registries are reachable
         self.assertTrue(is_endpoint_allowed("POST", "/v1.51/images/evil/push"))
 
     # ── Networks ──

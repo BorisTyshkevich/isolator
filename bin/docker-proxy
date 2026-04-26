@@ -585,6 +585,10 @@ def handle(client, upstream_path, user, expected_uid, check_peer=True):
                     if not chunk:
                         break
                     raw += chunk
+                    if len(raw) > MAX_BODY_SIZE:
+                        client.sendall(json_error("413 Payload Too Large", "chunked body too large"))
+                        log(user, "BLOCKED: oversize chunked body")
+                        return
                 try:
                     body = decode_chunked_body(raw)
                 except ValueError as e:
