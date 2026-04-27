@@ -843,6 +843,17 @@ def generate_anchor(config):
 
     uid_list = " ".join(str(u) for u in restricted_uids)
     log_kw = "log " if any(should_log(users[n]) for n in users if users[n]["uid"] in restricted_uids) else ""
+
+    # Loopback: pass everything quickly, no further rule processing on lo0.
+    # Equivalent to "set skip on lo0" but expressible inside an anchor (set
+    # directives only work in the main ruleset). The "quick" keyword makes
+    # this rule terminal — matching packets exit rule processing immediately,
+    # so the block rules below never see lo0 traffic. This both fixes the
+    # SYN-ACK-drop bug that broke sandbox-user TCP listeners (e.g.
+    # embedded-clickhouse) AND simplifies the rule set. Security analysis in
+    # docs/loopback-policy.md.
+    lines.append("pass quick on lo0 all")
+    lines.append("")
     lines.append(f"block {log_kw}out proto tcp from any to any user {{ {uid_list} }}")
     lines.append(f"block {log_kw}out proto udp from any to any user {{ {uid_list} }}")
     lines.append("")
@@ -858,10 +869,6 @@ def generate_anchor(config):
         # macOS pf: user keyword must come after address/port specifiers
         lines.append(f"pass {log_kw}out proto tcp from any to <{name}-allowed> port {port_spec} user {uid}")
 
-    lines.append("")
-    # Allow all localhost — local services (Chrome DevTools, MCP servers, etc.)
-    lines.append(f"pass out proto tcp from any to 127.0.0.1 user {{ {uid_list} }}")
-    lines.append(f"pass out proto udp from any to 127.0.0.1 user {{ {uid_list} }}")
     lines.append("")
     return "\n".join(lines)
 
