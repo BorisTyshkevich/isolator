@@ -1,33 +1,140 @@
-admin = "bvt"
+# Example /etc/isolator/config.toml
+#
+# This file shows every pattern isolator supports. Copy to /etc/isolator/config.toml
+# and customize. Run `sudo iso pf` after changes to apply firewall rules.
+#
+# All hostnames here are real and represent the actual minimum sets each
+# pattern needs to function. Usernames are anonymized — replace with your
+# own. UIDs are arbitrary; isolator allocates from BASE_UID=600 upward.
 
+# The macOS user account that owns isolator and runs `iso ...` commands.
+# Sandbox users inherit shell config, dotfiles, and SSH keys from this user
+# unless overridden. Replace with your real admin account name.
+admin = "admin"
+
+# ── Global allowlist ────────────────────────────────────────────────────────
+# Every restricted user gets these hosts/subnets in addition to their own.
+# Keep this list to "things every developer needs": LLM providers, package
+# registries, GitHub, common dev infrastructure.
 [global]
 hosts = [
+    # Anthropic / Claude Code
+    "api.anthropic.com",
+    "statsig.anthropic.com",
+    "sentry.io",
+    "downloads.claude.ai",
+    # GitHub — git, gh CLI, npm packages, release downloads
+    "github.com",
+    "api.github.com",
+    "raw.githubusercontent.com",
+    "objects.githubusercontent.com",
+    "codeload.github.com",
+    # GitHub Container Registry — Helm charts, container images
+    "ghcr.io",
+    "pkg-containers.githubusercontent.com",
+    # Package registries
     "registry.npmjs.org",
     "pypi.org",
     "files.pythonhosted.org",
+    # Rust toolchain — rustup distribution + cargo registry
+    "static.rust-lang.org",
+    "crates.io",
+    "index.crates.io",
+    "static.crates.io",
+]
+subnets = [
+    # Datadog telemetry — *.logs.us5.datadoghq.com (used by Claude Code SDK)
+    # DNS fails under sudo due to macOS search-domain collision with "us5",
+    # so pin the IPs directly.
+    "34.149.66.137/32",
+    "34.149.66.142/32",
+    # statsig.anthropic.com CDN — Google CDN range, Anthropic-controlled and
+    # authenticated, so safe to allow as a range.
+    "216.239.32.0/21",
+    # GitHub stable IP ranges (from api.github.com/meta). Avoids DNS-snapshot
+    # misses when GitHub rotates load-balancer IPs between pf reloads.
+    "192.30.252.0/22",
+    "185.199.108.0/22",
+    "140.82.112.0/20",
+    "143.55.64.0/20",
 ]
 
-[users.acm]
+# ── Pattern: restricted AI agent with OAuth credentials ─────────────────────
+# Suitable for users that ONLY run Claude Code or similar — no broad dev
+# tools. Auth credential is read from a root-owned keyfile and injected
+# into the user's environment at session start.
+[users.slot-0]
 uid = 600
 hosts = [
     "api.anthropic.com",
     "sentry.io",
 ]
 
-[users.click]
+[users.slot-0.auth]
+CLAUDE_CODE_OAUTH_TOKEN = "/etc/isolator/keys/claude-oauth"
+
+# ── Pattern: same shape, different LLM provider ─────────────────────────────
+[users.slot-1]
 uid = 601
 hosts = [
-    "api.anthropic.com",
     "api.openai.com",
 ]
 
-[users.click.auth]
+[users.slot-1.auth]
 OPENAI_API_KEY = "/etc/isolator/keys/openai"
 
-[users.mcp]
+# ── Pattern: inherit another user's shell / dotfiles / claude config ────────
+# `from = "slot-0"` means: at create time, copy slot-0's home dir as the
+# starting state. Hosts and auth are still independent — `from` only
+# affects skeleton files, not firewall rules.
+[users.slot-2]
 uid = 602
-from = "acm"
+from = "slot-0"
 hosts = [
     "api.anthropic.com",
     "mcp.demo.altinity.cloud",
+]
+
+[users.slot-2.auth]
+CLAUDE_CODE_OAUTH_TOKEN = "/etc/isolator/keys/claude-oauth"
+
+# ── Pattern: minimal user ───────────────────────────────────────────────────
+# No `hosts` list → only the global hosts apply. No auth → user provides
+# their own credentials (e.g. `claude /login` interactively).
+[users.agent]
+uid = 603
+
+[users.tools]
+uid = 604
+
+# ── Pattern: full-featured developer ────────────────────────────────────────
+# A user that runs Docker workloads, talks to Kubernetes, uses multiple
+# container registries, and needs SSH outbound (e.g. for git clone over
+# ssh, or for talking to a remote dev VM).
+#
+# - hosts: per-user additions, on top of the global list
+# - subnets: per-user CIDR allowlist (e.g. an internal k8s cluster)
+# - extra_ports: opens the listed TCP ports on `<user>-allowed` table
+#   destinations (port 443 is always implicit; here we add 22 for SSH,
+#   6443 for k8s API, 9440 for ClickHouse secure native TCP)
+[users.developer]
+uid = 605
+extra_ports = [22, 6443, 9440]
+subnets = ["10.128.0.0/16"]   # internal k8s cluster
+hosts = [
+    # Docker Hub
+    "registry-1.docker.io",
+    "auth.docker.io",
+    "production.cloudflare.docker.com",
+    # GitHub Packages (npm)
+    "pkg.github.com",
+    # Project-specific MCP / API / auth endpoints
+    "mcp.demo.altinity.cloud",
+    "altinity.auth0.com",
+    # Go module proxy — download only, no upload
+    "proxy.golang.org",
+    "sum.golang.org",
+    # storage.googleapis.com intentionally excluded: read-write endpoint,
+    # exfiltration risk. Go tools should set GOFLAGS=-mod=vendor or
+    # GONOSUMDB=* to avoid redirect-to-GCS paths.
 ]
