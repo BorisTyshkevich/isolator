@@ -858,6 +858,19 @@ def generate_anchor(config):
     lines.append(f"block {log_kw}out proto udp from any to any user {{ {uid_list} }}")
     lines.append("")
 
+    # DNS port 53 — required by Go's pure-Go resolver (CGO_ENABLED=0 binaries)
+    # and any tool that opens UDP/53 directly. macOS's libc resolver bypasses
+    # pf via mDNSResponder (Mach IPC, no packets from the calling process), so
+    # libc-using tools work without this. But static Go binaries (rustup,
+    # `acm`, `kubectl` from some builds) panic without it because their
+    # UDP/53 socket gets EAGAIN and Go's stdlib has slice-bounds bugs parsing
+    # the dropped response. Tradeoff: this enables DNS-tunnel exfiltration
+    # in principle, but sandbox users already have HTTPS-to-allowed-hosts
+    # which is a much wider channel.
+    lines.append(f"pass out proto udp from any to any port 53 user {{ {uid_list} }}")
+    lines.append(f"pass out proto tcp from any to any port 53 user {{ {uid_list} }}")
+    lines.append("")
+
     for name, user_config in users.items():
         uid = user_config["uid"]
         if is_unrestricted(user_config):
