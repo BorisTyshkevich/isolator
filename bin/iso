@@ -19,6 +19,10 @@ Usage:
 
 Options for create:
     --from USER                       Copy config from USER (default: admin)
+    --refresh-files                   Re-copy shell/claude/codex/ssh files even
+                                      if the user already exists (overwrites
+                                      any local customizations). Default: skip
+                                      file copy on existing users.
 
 Examples:
     iso create acm
@@ -705,8 +709,23 @@ def create_docker_network(name, config):
 
 # ── Create command ──────────────────────────────────────────────────────────
 
-def cmd_create(name, config, from_user=None):
-    """Create one isolated user."""
+def cmd_create(name, config, from_user=None, refresh_files=False):
+    """Create one isolated user.
+
+    For brand-new users: provisions the macOS account and copies all skeleton
+    files (shell rc, claude config, codex config, ssh key, etc.) from the
+    source user.
+
+    For users that already exist: by default we run only the *idempotent*
+    setup steps (group membership, dir perms, ACLs, auth keyfiles, docker
+    network, ownership). Skeleton-file copying is SKIPPED so the user's
+    local customizations (.bash_profile, .claude/CLAUDE.md, .codex/config.toml,
+    ~/.ssh/) are preserved across re-runs of `iso create`.
+
+    Pass --refresh-files to force re-copying everything, useful after the
+    admin's source files change and you want sandbox users to inherit the
+    update.
+    """
     name = validate_username(name)
     users = config.get("users", {})
     admin = config["admin"]
@@ -730,24 +749,34 @@ def cmd_create(name, config, from_user=None):
     # Ensure isolator group exists (idempotent) — needed even if user exists
     ensure_isolator_group()
 
-    if user_exists(name):
-        print(f"  User {name} already exists, skipping dscl creation")
-    else:
+    is_new = not user_exists(name)
+    if is_new:
         shell_type, shell_path = detect_shell(source)
         create_macos_user(name, uid, shell_path)
+    else:
+        print(f"  User {name} already exists, skipping dscl creation")
 
     shell_type, shell_path = detect_shell(source)
 
+    # File-copying steps overwrite the user's dotfiles/configs. For new users
+    # this is the initial population; for existing users it's destructive
+    # (wipes any local edits). Gate behind --refresh-files for existing users.
+    do_copy = is_new or refresh_files
+    if not do_copy:
+        print(f"  Skipping skeleton file copy (use --refresh-files to overwrite)")
+
     setup_home(name, admin)
-    copy_shell_config(name, source, shell_type)
-    copy_claude_md(name, source)
-    copy_claude_config(name, source)
-    copy_codex_config(name, source)
+    if do_copy:
+        copy_shell_config(name, source, shell_type)
+        copy_claude_md(name, source)
+        copy_claude_config(name, source)
+        copy_codex_config(name, source)
     inject_auth_keyfiles(name, user_config)
     create_empty_keychain(name)
     create_skeleton(name, admin)
     create_docker_network(name, config)
-    setup_ssh_key(name, admin)
+    if do_copy:
+        setup_ssh_key(name, admin)
     ensure_shared_tool_access()
     set_ownership(name)
     exclude_from_backup(name)
@@ -1384,6 +1413,7 @@ SUBCOMMANDS = {"create", "delete", "pf", "list", "chrome"}
 def parse_create_args(args):
     """Parse options for create subcommand."""
     from_user = None
+    refresh_files = False
     names = []
 
     while args:
@@ -1392,10 +1422,12 @@ def parse_create_args(args):
             from_user = args.pop(0)
         elif arg == "--all":
             names.append("--all")
+        elif arg == "--refresh-files":
+            refresh_files = True
         else:
             names.append(arg)
 
-    return names, from_user
+    return names, from_user, refresh_files
 
 
 def main():
@@ -1434,16 +1466,16 @@ def main():
     config = load_config()
 
     if subcmd == "create":
-        names, from_user = parse_create_args(argv[1:])
+        names, from_user, refresh_files = parse_create_args(argv[1:])
         if not names:
             print("Usage: iso create <name> [options]")
             sys.exit(1)
         if "--all" in names:
             for name in config.get("users", {}):
-                cmd_create(name, config, from_user)
+                cmd_create(name, config, from_user, refresh_files=refresh_files)
         else:
             for name in names:
-                cmd_create(name, config, from_user)
+                cmd_create(name, config, from_user, refresh_files=refresh_files)
 
     elif subcmd == "delete":
         if len(argv) < 2:
