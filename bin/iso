@@ -36,7 +36,6 @@ Examples:
     iso pf                            # after editing hosts/users in config.toml
 """
 
-import json
 import os
 import re
 import shlex
@@ -70,14 +69,6 @@ SHELL_RC_FILES = {
     "bash": [".bash_profile", ".bashrc"],
     "zsh": [".zprofile", ".zshrc"],
 }
-
-CLAUDE_SETTINGS_OVERRIDES = {
-    "defaultMode": "bypassPermissions",
-    "skipDangerousModePermissionPrompt": True,
-}
-
-CODEX_COPY_FILES = ["auth.json", "AGENTS.md"]
-CODEX_COPY_DIRS = ["plugins", "skills", "agents"]
 
 SHARED_TOOLS = [
     {
@@ -167,21 +158,6 @@ def detect_shell(user):
     return "bash", shell
 
 
-def copy_path(src, dst):
-    """Copy file, directory, or symlink."""
-    if dst.exists() or dst.is_symlink():
-        if dst.is_dir() and not dst.is_symlink():
-            shutil.rmtree(dst)
-        else:
-            dst.unlink()
-    if src.is_symlink():
-        os.symlink(os.readlink(src), dst)
-    elif src.is_dir():
-        shutil.copytree(src, dst, symlinks=True)
-    else:
-        shutil.copy2(src, dst)
-
-
 VALID_USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
@@ -252,240 +228,49 @@ def setup_home(name, admin):
          str(home)])
 
 
-def copy_shell_config(name, source_user, shell_type):
+def write_minimal_shell_config(name, shell_type):
+    """Write minimal sandbox shell rc files (no inheritance from admin).
+
+    Sandbox users don't get admin's bash quirks, broken homebrew completions,
+    or admin-specific aliases. They get a minimal rc that sources
+    /etc/isolator/profile (which sets PATH, DOCKER_HOST, TMPDIR, ISO_TOKEN_*
+    unwrap, etc.). Sandbox user can edit these files themselves to add
+    customizations — set_ownership leaves them user-writable.
+    """
     home = Path(f"/Users/{name}")
-    source_home = Path(f"/Users/{source_user}")
     rc_files = SHELL_RC_FILES.get(shell_type, [])
-
-    for rc in rc_files:
-        src = source_home / rc
-        dst = home / rc
-        if src.exists():
-            print(f"  Copying {src} -> {dst}")
-            shutil.copy2(src, dst)
-
-    source_line = f"\nsource {PROFILE_PATH}\n"
+    content = (
+        "# Isolator sandbox shell init.\n"
+        "# Add your own customizations below the source line.\n"
+        f"[[ -f {PROFILE_PATH} ]] && source {PROFILE_PATH}\n"
+    )
     for rc in rc_files:
         rc_path = home / rc
-        if not rc_path.exists():
-            rc_path.touch()
-        content = rc_path.read_text()
-        if str(PROFILE_PATH) not in content:
-            print(f"  Appending isolator profile to {rc_path}")
-            rc_path.write_text(content + source_line)
+        rc_path.write_text(content)
+        print(f"  Wrote minimal {rc_path}")
 
 
-ISOLATOR_MARKER = "<!-- isolator-sandbox-instructions -->"
+def install_sandbox_claude_md(name):
+    """Install /etc/isolator/CLAUDE.md as ~/.claude/CLAUDE.md (locked).
 
+    Sandbox policy doc — tells the agent it's running in a sandbox
+    (workspace path, /tmp restrictions, Chrome rules, network allowlist).
+    Always overwritten so updates to /etc/isolator/CLAUDE.md propagate
+    on next `iso create <user>`. Doesn't merge with the admin's
+    personal CLAUDE.md — sandbox policy is policy, not preference.
 
-def copy_claude_md(name, source_user):
-    """Merge admin's CLAUDE.md with isolator sandbox instructions.
-
-    If source user has ~/.claude/CLAUDE.md, copy it and append isolator
-    instructions (marked with a comment so we can replace on re-run).
-    If no source CLAUDE.md, use isolator template only.
+    Made root-owned mode 0444 by set_ownership so sandbox agents can't
+    rewrite their own sandbox instructions.
     """
     if not CLAUDE_MD_PATH.exists():
+        print(f"  WARNING: {CLAUDE_MD_PATH} missing — run `iso install` first")
         return
     home = Path(f"/Users/{name}")
     claude_dir = home / ".claude"
     claude_dir.mkdir(exist_ok=True)
     dst = claude_dir / "CLAUDE.md"
-
-    # Source user's CLAUDE.md (admin's custom instructions)
-    source_md = Path(f"/Users/{source_user}/.claude/CLAUDE.md")
-    if source_md.exists():
-        content = source_md.read_text()
-        # Strip any previous isolator block
-        if ISOLATOR_MARKER in content:
-            content = content[:content.index(ISOLATOR_MARKER)].rstrip()
-    else:
-        content = ""
-
-    # Append isolator sandbox instructions
-    isolator_block = CLAUDE_MD_PATH.read_text()
-    merged = f"{content}\n\n{ISOLATOR_MARKER}\n{isolator_block}" if content else isolator_block
-    dst.write_text(merged)
-    print(f"  Merged CLAUDE.md (admin + isolator sandbox instructions)")
-
-
-def copy_claude_config(name, source_user):
-    home = Path(f"/Users/{name}")
-    source_home = Path(f"/Users/{source_user}")
-
-    claude_dir = home / ".claude"
-    claude_dir.mkdir(exist_ok=True)
-
-    # settings.json
-    src_settings = source_home / ".claude" / "settings.json"
-    dst_settings = claude_dir / "settings.json"
-    settings = {}
-    if src_settings.exists():
-        print(f"  Copying {src_settings}")
-        settings = json.loads(src_settings.read_text())
-    settings.update(CLAUDE_SETTINGS_OVERRIDES)
-    dst_settings.write_text(json.dumps(settings, indent=2) + "\n")
-
-    # .claude.json
-    src_claude_json = source_home / ".claude.json"
-    dst_claude_json = home / ".claude.json"
-    CLAUDE_JSON_KEYS = [
-        "mcpServers", "oauthAccount", "hasCompletedOnboarding",
-        "lastOnboardingVersion", "numStartups", "firstStartTime",
-        "migrationVersion", "opusProMigrationComplete",
-        "sonnet45MigrationComplete", "sonnet1m45MigrationComplete",
-        "opus45MigrationComplete", "thinkingMigrationComplete",
-    ]
-    claude_json_data = {}
-    if src_claude_json.exists():
-        try:
-            data = json.loads(src_claude_json.read_text())
-            for key in CLAUDE_JSON_KEYS:
-                if key in data:
-                    claude_json_data[key] = data[key]
-            if "mcpServers" in claude_json_data:
-                print(f"  Copying MCP servers: {list(claude_json_data['mcpServers'].keys())}")
-            if "oauthAccount" in claude_json_data:
-                print(f"  Copying OAuth account: {claude_json_data['oauthAccount'].get('emailAddress', '?')}")
-        except (json.JSONDecodeError, KeyError):
-            pass
-    # Pre-trust the user's home directory
-    home_path = f"/Users/{name}"
-    claude_json_data["projects"] = {
-        home_path: {
-            "allowedTools": [],
-            "hasTrustDialogAccepted": True,
-        }
-    }
-    dst_claude_json.write_text(json.dumps(claude_json_data, indent=2) + "\n")
-
-    # skills symlink
-    src_skills = source_home / ".claude" / "skills"
-    dst_skills = claude_dir / "skills"
-    if src_skills.is_symlink():
-        target = os.readlink(src_skills)
-        print(f"  Linking skills -> {target}")
-        if dst_skills.exists() or dst_skills.is_symlink():
-            dst_skills.unlink()
-        os.symlink(target, dst_skills)
-
-    # plugins — copy and fix hardcoded paths in JSON configs
-    src_plugins = source_home / ".claude" / "plugins"
-    dst_plugins = claude_dir / "plugins"
-    if src_plugins.is_dir():
-        print(f"  Copying plugins/")
-        if dst_plugins.exists():
-            shutil.rmtree(dst_plugins)
-        shutil.copytree(src_plugins, dst_plugins)
-        # Rewrite source-user paths to sandbox-user paths in JSON configs
-        for json_file in dst_plugins.glob("*.json"):
-            try:
-                content = json_file.read_text()
-                if str(source_home) in content:
-                    content = content.replace(str(source_home), str(home))
-                    json_file.write_text(content)
-            except (OSError, UnicodeDecodeError):
-                pass
-
-
-CODEX_CONFIG_OVERRIDES = {
-    "approval_policy": "never",
-    "sandbox_mode": "danger-full-access",
-}
-
-
-def _toml_escape(s):
-    """Escape a string for TOML (basic strings only)."""
-    return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-
-
-def _toml_emit_value(v):
-    """Emit a TOML scalar/array. Doesn't handle nested tables."""
-    if isinstance(v, bool):
-        return "true" if v else "false"
-    if isinstance(v, int) or isinstance(v, float):
-        return str(v)
-    if isinstance(v, str):
-        return f'"{_toml_escape(v)}"'
-    if isinstance(v, list):
-        return "[" + ", ".join(_toml_emit_value(x) for x in v) + "]"
-    raise TypeError(f"unsupported TOML value type: {type(v).__name__}")
-
-
-def _toml_emit(data, prefix=""):
-    """Serialize a TOML document. Tables-of-tables, etc.
-
-    Stdlib has no TOML writer, so this is a small custom emitter.
-    Handles: scalars, arrays of scalars, nested tables, arrays of tables.
-    """
-    out = []
-    # First emit scalars at this level
-    scalars = {k: v for k, v in data.items() if not isinstance(v, dict)
-               and not (isinstance(v, list) and v and all(isinstance(x, dict) for x in v))}
-    for k, v in scalars.items():
-        out.append(f"{k} = {_toml_emit_value(v)}")
-    # Then nested tables
-    for k, v in data.items():
-        if isinstance(v, dict):
-            section = f"{prefix}{k}" if not prefix else f"{prefix}.{k}"
-            out.append(f"\n[{section}]")
-            out.append(_toml_emit(v, section))
-        elif isinstance(v, list) and v and all(isinstance(x, dict) for x in v):
-            section = f"{prefix}{k}" if not prefix else f"{prefix}.{k}"
-            for item in v:
-                out.append(f"\n[[{section}]]")
-                out.append(_toml_emit(item, section))
-    return "\n".join(line for line in out if line)
-
-
-def sanitize_codex_config(src, dst):
-    """Parse codex config.toml, drop project trust entries, override bypass mode."""
-    try:
-        with open(src, "rb") as f:
-            data = tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError) as e:
-        print(f"  ERROR parsing {src}: {e}")
-        return False
-
-    # Drop [projects.*] trust entries
-    removed_projects = 0
-    if "projects" in data and isinstance(data["projects"], dict):
-        removed_projects = len(data["projects"])
-        del data["projects"]
-
-    # Override bypass mode keys
-    for k, v in CODEX_CONFIG_OVERRIDES.items():
-        data[k] = v
-
-    dst.write_text(_toml_emit(data) + "\n")
-    print(f"  Copying {src} -> {dst} (dropped {removed_projects} project trust entries, set bypass mode)")
-    return True
-
-
-def copy_codex_config(name, source_user):
-    home = Path(f"/Users/{name}")
-    source_home = Path(f"/Users/{source_user}")
-    src_codex = source_home / ".codex"
-    dst_codex = home / ".codex"
-    if not src_codex.exists():
-        print("  No ~/.codex found in source user, skipping Codex config")
-        return
-    dst_codex.mkdir(exist_ok=True)
-    src_config = src_codex / "config.toml"
-    if src_config.exists():
-        sanitize_codex_config(src_config, dst_codex / "config.toml")
-    for rel in CODEX_COPY_FILES:
-        src = src_codex / rel
-        dst = dst_codex / rel
-        if src.exists() or src.is_symlink():
-            print(f"  Copying {src} -> {dst}")
-            copy_path(src, dst)
-    for rel in CODEX_COPY_DIRS:
-        src = src_codex / rel
-        dst = dst_codex / rel
-        if src.exists() or src.is_symlink():
-            print(f"  Copying {src} -> {dst}")
-            copy_path(src, dst)
+    shutil.copyfile(CLAUDE_MD_PATH, dst)
+    print(f"  Installed sandbox CLAUDE.md -> {dst}")
 
 
 def ensure_shared_tool_access():
@@ -621,55 +406,39 @@ def create_skeleton(name, admin):
 
 
 def set_ownership(name):
+    """Lock down sandbox-policy files; leave user-config files editable.
+
+    iso no longer copies admin's claude/codex configs into sandbox homes —
+    Claude Code and Codex create those files themselves on first run, owned
+    by the sandbox user. So this function only handles:
+      - rc files (we wrote minimal versions)
+      - .claude/CLAUDE.md (policy doc — root-owned, locked)
+      - .claude/ dir itself (must be user-writable)
+      - skeleton dirs (.local, .cache, tmp)
+    """
     home = Path(f"/Users/{name}")
 
-    # Config files: root-owned, world-readable (no secrets here)
-    for f in [".bash_profile", ".bashrc", ".zprofile", ".zshrc",
-              ".claude/CLAUDE.md", ".claude/settings.json",
-              ".claude.json", ".codex/config.toml", ".codex/AGENTS.md"]:
+    # Sandbox shell rc files: user-editable. Owner can write; isolator
+    # group can read; no world access.
+    for f in [".bash_profile", ".bashrc", ".zprofile", ".zshrc"]:
         path = home / f
         if path.exists():
-            run(["chown", "root:wheel", str(path)])
-            run(["chmod", "444", str(path)])
+            run(["chown", f"{name}:{ISOLATOR_GROUP}", str(path)])
+            run(["chmod", "640", str(path)])
 
-    # Note: secrets used to live in ~/.env; that file is no longer written.
-    # See docs/secrets-via-1password.md for the in-RAM delivery model.
-
+    # ~/.claude/ exists because we install the sandbox CLAUDE.md there.
+    # The directory itself must be user-owned so Claude Code can write
+    # session files; the CLAUDE.md inside is locked policy.
     claude_dir = home / ".claude"
     if claude_dir.exists():
         run(["chown", f"{name}:{ISOLATOR_GROUP}", str(claude_dir)])
         run(["chmod", "700", str(claude_dir)])
+    claude_md = claude_dir / "CLAUDE.md"
+    if claude_md.exists():
+        run(["chown", "root:wheel", str(claude_md)])
+        run(["chmod", "444", str(claude_md)])
 
-    # plugins — user-owned (Claude Code clones marketplaces here)
-    plugins_dir = home / ".claude" / "plugins"
-    if plugins_dir.exists():
-        run(["chown", "-R", f"{name}:{ISOLATOR_GROUP}", str(plugins_dir)])
-        run(["chmod", "-R", "755", str(plugins_dir)])
-
-    cj = home / ".claude.json"
-    if cj.exists():
-        run(["chown", f"{name}:{ISOLATOR_GROUP}", str(cj)])
-        run(["chmod", "600", str(cj)])
-
-    codex_dir = home / ".codex"
-    if codex_dir.exists():
-        run(["chown", f"{name}:{ISOLATOR_GROUP}", str(codex_dir)])
-        run(["chmod", "700", str(codex_dir)])
-
-    codex_auth = codex_dir / "auth.json"
-    if codex_auth.exists():
-        run(["chown", f"{name}:{ISOLATOR_GROUP}", str(codex_auth)])
-        run(["chmod", "600", str(codex_auth)])
-
-    for rel in [".codex/plugins", ".codex/skills", ".codex/agents"]:
-        path = home / rel
-        if path.exists():
-            if path.is_symlink():
-                run(["chown", "-h", "root:wheel", str(path)])
-            else:
-                run(["chown", "-R", "root:wheel", str(path)])
-                run(["chmod", "-R", "755", str(path)])
-
+    # Skeleton dirs created by create_skeleton — user-owned.
     for d in [".local", ".cache", "tmp"]:
         path = home / d
         if path.exists():
@@ -797,19 +566,22 @@ def cmd_create(name, config, from_user=None, refresh_files=False):
 
     shell_type, shell_path = detect_shell(source)
 
-    # File-copying steps overwrite the user's dotfiles/configs. For new users
-    # this is the initial population; for existing users it's destructive
-    # (wipes any local edits). Gate behind --refresh-files for existing users.
+    # Shell rc files: written minimally (just sources /etc/isolator/profile)
+    # for new users or with --refresh-files. Sandbox user can edit them
+    # afterward (set_ownership leaves them user:isolator mode 644).
     do_copy = is_new or refresh_files
     if not do_copy:
-        print(f"  Skipping skeleton file copy (use --refresh-files to overwrite)")
+        print(f"  Skipping skeleton file rewrite (use --refresh-files to reset)")
 
     setup_home(name, admin)
     if do_copy:
-        copy_shell_config(name, source, shell_type)
-        copy_claude_md(name, source)
-        copy_claude_config(name, source)
-        copy_codex_config(name, source)
+        write_minimal_shell_config(name, shell_type)
+
+    # Sandbox CLAUDE.md (policy doc) is always refreshed so updates to
+    # /etc/isolator/CLAUDE.md propagate. Locked root:wheel 444 by
+    # set_ownership so the agent can't rewrite its own sandbox rules.
+    install_sandbox_claude_md(name)
+
     # Wipe any stale .env left from the old keyfile-injection scheme — secrets
     # are now resolved at session start and delivered in-RAM via process env.
     stale_env = Path(f"/Users/{name}/.env")
