@@ -1252,14 +1252,22 @@ def build_ssh_cmd(user, command, extra, args, cwd=None, send_env_vars=None):
     without copying private keys.
 
     send_env_vars: iterable of env-var names to forward via SendEnv.
-    The names should already be ISO_TOKEN_-prefixed; the remote profile
-    un-prefixes them. Requires sshd to AcceptEnv ISO_TOKEN_* (see
-    etc/sshd-isolator.conf).
+    The names should already be ISO_TOKEN_-prefixed; /etc/isolator/profile
+    un-prefixes them at session start. Requires sshd to AcceptEnv
+    ISO_TOKEN_* (see etc/sshd-isolator.conf).
+
+    The remote command sources /etc/isolator/profile before exec'ing the
+    user's command — sshd runs `<shell> -c '...'`, a non-login non-
+    interactive shell that wouldn't otherwise read any rc file. Without
+    this the ISO_TOKEN_ un-prefix loop never runs and the secrets stay
+    invisible to the user's command.
     """
     admin = get_admin()
     priv_key = ssh_key_path(admin)
 
-    parts = []
+    # Source the isolator profile (PATH, DOCKER_HOST, ISO_TOKEN_ unwrap,
+    # etc.) — sshd's `bash -c <cmd>` doesn't pick up any rc otherwise.
+    parts = [". /etc/isolator/profile 2>/dev/null || true"]
     if cwd:
         parts.append(f"cd {shlex.quote(cwd)}")
     quoted = " ".join(shlex.quote(a) for a in [command] + extra + args)
