@@ -12,8 +12,16 @@ KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 mkdir -p "$HOME/tmp" 2>/dev/null
 export TMPDIR="$HOME/tmp"
 
-# Environment variables from config key files (OPENAI_API_KEY, etc.)
-[[ -f "$HOME/.env" ]] && source "$HOME/.env"
+# Auth secrets are delivered in-RAM by `iso`:
+# - sudo path: vars are passed directly via sudo --preserve-env
+# - SSH path: vars arrive prefixed as ISO_TOKEN_<NAME> (sshd_config has
+#   AcceptEnv ISO_TOKEN_*); strip the prefix back to the real name here.
+# See docs/secrets-via-1password.md.
+for __iso_v in $(env | sed -n 's/^\(ISO_TOKEN_[^=]*\)=.*/\1/p'); do
+    eval "export ${__iso_v#ISO_TOKEN_}=\"\${$__iso_v}\""
+    unset "$__iso_v"
+done
+unset __iso_v
 
 # Ensure core tools are in PATH, then prepend local installs
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"

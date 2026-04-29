@@ -530,24 +530,65 @@ def create_empty_keychain(name):
     print(f"  Created empty default keychain")
 
 
-def inject_auth_keyfiles(name, user_config):
-    """Inject env vars from key files defined in config [users.<name>.auth]."""
+def resolve_auth_secrets(user_config):
+    """Resolve secrets declared in [users.<name>.auth] to a {var: value} dict.
+
+    Values in the auth table may be:
+      * "op://vault/item/field"   — resolved via 1Password CLI (preferred).
+      * "/path/to/keyfile"        — DEPRECATED; read from disk with a warning.
+
+    Called at session start (cmd_run, cmd_remote), NOT at user-create time.
+    Secrets are returned in-memory; the caller is responsible for delivering
+    them via process env (sudo --preserve-env / ssh SendEnv). No `.env` file
+    is written.
+
+    Empty dict if no auth section. Exits with a clear message if `op` is
+    needed but unavailable / not signed in.
+    """
     auth = user_config.get("auth", {})
     if not auth:
-        return
-    home = Path(f"/Users/{name}")
-    env_file = home / ".env"
-    lines = ["# Isolator auth (from config key files)"]
-    for var, keyfile in auth.items():
-        keypath = Path(keyfile)
-        if not keypath.exists():
-            print(f"  WARNING: key file {keypath} not found, skipping {var}")
-            continue
-        value = keypath.read_text().strip()
-        lines.append(f'export {var}="{value}"')
-        print(f"  Injecting {var} from {keypath}")
-    if len(lines) > 1:
-        env_file.write_text("\n".join(lines) + "\n")
+        return {}
+
+    resolved = {}
+    used_deprecated_path = False
+    for var, value_spec in auth.items():
+        if value_spec.startswith("op://"):
+            try:
+                r = subprocess.run(
+                    ["op", "read", "--no-newline", value_spec],
+                    capture_output=True, text=True, check=False,
+                )
+            except FileNotFoundError:
+                print(f"FATAL: 'op' CLI not found. Install 1Password CLI "
+                      f"(brew install --cask 1password-cli) to resolve {var}.",
+                      file=sys.stderr)
+                sys.exit(1)
+            if r.returncode != 0:
+                err = r.stderr.strip()
+                low = err.lower()
+                if "signed in" in low or "session" in low or "signin" in low:
+                    print(f"FATAL: 1Password session not active. "
+                          f"Run: eval $(op signin)", file=sys.stderr)
+                    print(f"       (then re-run this command)", file=sys.stderr)
+                else:
+                    print(f"FATAL: failed to resolve {var} from {value_spec}: {err}",
+                          file=sys.stderr)
+                sys.exit(1)
+            resolved[var] = r.stdout
+        else:
+            used_deprecated_path = True
+            keypath = Path(value_spec)
+            if not keypath.exists():
+                print(f"  WARNING: key file {keypath} not found, skipping {var}",
+                      file=sys.stderr)
+                continue
+            resolved[var] = keypath.read_text().strip()
+
+    if used_deprecated_path:
+        print(f"  DEPRECATED: file-path auth values are deprecated. "
+              f"Switch to op://vault/item/field URIs.", file=sys.stderr)
+
+    return resolved
 
 
 # ── Ownership ───────────────────────────────────────────────────────────────
@@ -590,11 +631,8 @@ def set_ownership(name):
             run(["chown", "root:wheel", str(path)])
             run(["chmod", "444", str(path)])
 
-    # .env contains secrets — only the user can read it
-    env_file = home / ".env"
-    if env_file.exists():
-        run(["chown", f"{name}:{ISOLATOR_GROUP}", str(env_file)])
-        run(["chmod", "400", str(env_file)])
+    # Note: secrets used to live in ~/.env; that file is no longer written.
+    # See docs/secrets-via-1password.md for the in-RAM delivery model.
 
     claude_dir = home / ".claude"
     if claude_dir.exists():
@@ -771,7 +809,12 @@ def cmd_create(name, config, from_user=None, refresh_files=False):
         copy_claude_md(name, source)
         copy_claude_config(name, source)
         copy_codex_config(name, source)
-    inject_auth_keyfiles(name, user_config)
+    # Wipe any stale .env left from the old keyfile-injection scheme — secrets
+    # are now resolved at session start and delivered in-RAM via process env.
+    stale_env = Path(f"/Users/{name}/.env")
+    if stale_env.exists():
+        print(f"  Removing stale {stale_env} (secrets now in-RAM)")
+        stale_env.unlink()
     create_empty_keychain(name)
     create_skeleton(name, admin)
     create_docker_network(name, config)
@@ -1190,8 +1233,18 @@ def ensure_docker_proxy(user):
     return "failed"
 
 
-def build_ssh_cmd(user, command, extra, args, cwd=None):
-    """Build SSH command to run as sandboxed user."""
+def build_ssh_cmd(user, command, extra, args, cwd=None, send_env_vars=None):
+    """Build SSH command to run as sandboxed user.
+
+    -A enables agent forwarding so admin's `op ssh agent` (or any other
+    SSH agent) provides keys for outbound ssh/git inside the sandbox
+    without copying private keys.
+
+    send_env_vars: iterable of env-var names to forward via SendEnv.
+    The names should already be ISO_TOKEN_-prefixed; the remote profile
+    un-prefixes them. Requires sshd to AcceptEnv ISO_TOKEN_* (see
+    etc/sshd-isolator.conf).
+    """
     admin = get_admin()
     priv_key = ssh_key_path(admin)
 
@@ -1202,17 +1255,31 @@ def build_ssh_cmd(user, command, extra, args, cwd=None):
     parts.append(f"exec {quoted}")
 
     remote = " && ".join(parts)
-    return ["ssh", "-t", "-i", str(priv_key)] + SSH_OPTS + [
-        f"{user}@127.0.0.1", remote]
+    cmd = ["ssh", "-A", "-t", "-i", str(priv_key)] + SSH_OPTS
+    for var_name in (send_env_vars or []):
+        cmd += ["-o", f"SendEnv={var_name}"]
+    cmd += [f"{user}@127.0.0.1", remote]
+    return cmd
 
 
 def cmd_run(user, command, args, use_ssh=False):
-    """Run a command as an isolated user. Default: sudo. With -s: SSH."""
+    """Run a command as an isolated user. Default: sudo. With -s: SSH.
+
+    Auth secrets declared in [users.<name>.auth] are resolved here (via
+    1Password CLI for op:// URIs, or read from disk for legacy file paths)
+    and delivered to the sandboxed process via the host transport's env
+    mechanism — never written to disk.
+    """
     user = validate_username(user)
     docker_status = ensure_docker_proxy(user)
     extra = COMMAND_FLAGS.get(command, [])
     user_ws = WORKSPACES_DIR / user
     cwd = str(user_ws) if user_ws.exists() else None
+
+    # Resolve auth secrets in-memory (calls `op read` per URI; may biometric-prompt).
+    config = load_config()
+    user_config = config.get("users", {}).get(user, {})
+    resolved = resolve_auth_secrets(user_config)
 
     if docker_status == "failed":
         print(f"WARNING: Docker proxy for {user} failed to start.")
@@ -1222,20 +1289,33 @@ def cmd_run(user, command, args, use_ssh=False):
     if use_ssh:
         admin = get_admin()
         priv_key = ssh_key_path(admin)
-        if priv_key.exists():
-            os.execvp("ssh", build_ssh_cmd(user, command, extra, args, cwd))
-        else:
+        if not priv_key.exists():
             print("SSH key not found. Run 'iso create' first or use sudo mode (without -s).")
             sys.exit(1)
+        # Forward each secret as ISO_TOKEN_<name>; remote profile un-prefixes.
+        ssh_env = {f"ISO_TOKEN_{k}": v for k, v in resolved.items()}
+        ssh_cmd = build_ssh_cmd(user, command, extra, args, cwd,
+                                send_env_vars=ssh_env.keys())
+        env = {**os.environ, **ssh_env}
+        os.execvpe("ssh", ssh_cmd, env)
     else:
-        # Sudo mode: inherits admin's GUI session (open, Chrome, etc. work)
+        # Sudo mode: inherits admin's GUI session (open, Chrome, etc. work).
+        # --preserve-env explicitly lists the secret vars so sudo's default
+        # env reset doesn't strip them; -i still gives a login shell so the
+        # rest of the profile loads normally.
         all_args = [command] + extra + args
+        sudo_args = ["sudo"]
+        if resolved:
+            sudo_args.append(f"--preserve-env={','.join(resolved)}")
+        sudo_args += ["-u", user, "-i"]
         if cwd:
             quoted = " ".join(shlex.quote(a) for a in all_args)
             shell_cmd = f"cd {shlex.quote(cwd)} && exec {quoted}"
-            os.execvp("sudo", ["sudo", "-u", user, "-i", "bash", "-c", shell_cmd])
+            sudo_args += ["bash", "-c", shell_cmd]
         else:
-            os.execvp("sudo", ["sudo", "-u", user, "-i"] + all_args)
+            sudo_args += all_args
+        env = {**os.environ, **resolved}
+        os.execvpe("sudo", sudo_args, env)
 
 
 # ── Remote command ──────────────────────────────────────────────────────────
@@ -1300,15 +1380,30 @@ def cmd_remote(user, args):
 
     admin = get_admin()
     priv_key = ssh_key_path(admin)
+
+    # Resolve auth secrets in-memory; deliver via env (no .env on disk).
+    config = load_config()
+    user_config = config.get("users", {}).get(user, {})
+    resolved = resolve_auth_secrets(user_config)
+
     if priv_key.exists():
         user_ws = WORKSPACES_DIR / user
         cwd = str(user_ws) if user_ws.exists() else None
-        remote_cmd = build_ssh_cmd(user, "claude",
-                                   ["--remote", "--permission-mode", "bypassPermissions"], [],
-                                   cwd)
+        ssh_env = {f"ISO_TOKEN_{k}": v for k, v in resolved.items()}
+        remote_cmd = build_ssh_cmd(
+            user, "claude",
+            ["--remote", "--permission-mode", "bypassPermissions"], [],
+            cwd, send_env_vars=ssh_env.keys(),
+        )
+        env_for_remote = {**os.environ, **ssh_env}
     else:
-        remote_cmd = ["sudo", "-u", user, "-i",
+        sudo_args = ["sudo"]
+        if resolved:
+            sudo_args.append(f"--preserve-env={','.join(resolved)}")
+        sudo_args += ["-u", user, "-i",
                       "claude", "--remote", "--permission-mode", "bypassPermissions"]
+        remote_cmd = sudo_args
+        env_for_remote = {**os.environ, **resolved}
 
     if bg:
         if not REMOTE_PID_DIR.exists():
@@ -1325,7 +1420,7 @@ def cmd_remote(user, args):
                 print(f"FATAL: {REMOTE_PID_DIR} not root-owned (uid={st.st_uid})")
                 sys.exit(1)
         proc = subprocess.Popen(
-            remote_cmd,
+            remote_cmd, env=env_for_remote,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         pid_file = remote_pid_file(user)
         # Write via sudo since dir is root-owned
@@ -1342,7 +1437,7 @@ def cmd_remote(user, args):
                 break
     else:
         # Foreground — exec into it
-        os.execvp("sudo", remote_cmd)
+        os.execvpe(remote_cmd[0], remote_cmd, env_for_remote)
 
 
 # ── Chrome command ──────────────────────────────────────────────────────────

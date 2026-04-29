@@ -135,21 +135,25 @@ Re-authentication: if the token expires, just `/login` again.
 
 ### Other API keys (OPENAI_API_KEY, etc.)
 
-For non-Claude API keys, define them in `config.toml`:
+For non-Claude API keys, point at a 1Password reference in `config.toml`:
 
 ```toml
 [users.click.auth]
-OPENAI_API_KEY = "/etc/isolator/keys/openai"
+OPENAI_API_KEY = "op://Personal/openai-api-key/credential"
 ```
 
-Store the key in a root-only file:
+The admin's `op` CLI (1Password) resolves these at session start (one
+biometric prompt batch per `op signin` window). Resolved values are
+delivered to the sandbox process **in RAM** via `sudo --preserve-env`
+or `ssh SendEnv` — never written to disk, never persisted past the
+session. Rotating a credential is a vault edit; no `iso create` re-run
+needed.
 
-```bash
-echo "sk-..." | sudo tee /etc/isolator/keys/openai > /dev/null
-sudo chmod 400 /etc/isolator/keys/openai
-```
+Setup, vault layout, SSH agent forwarding, and migration from the old
+keyfile scheme: see [`docs/secrets-via-1password.md`](docs/secrets-via-1password.md).
 
-On `iso create`, each key is read and written to `~/.env` (root-owned, read-only 444). The profile sources `~/.env` on login.
+The legacy `/etc/isolator/keys/<file>` syntax still works with a
+deprecation warning; it will be removed in a future release.
 
 ### Codex
 

@@ -61,8 +61,9 @@ subnets = [
 
 # ── Pattern: restricted AI agent with OAuth credentials ─────────────────────
 # Suitable for users that ONLY run Claude Code or similar — no broad dev
-# tools. Auth credential is read from a root-owned keyfile and injected
-# into the user's environment at session start.
+# tools. Auth credentials are 1Password references (op://vault/item/field);
+# admin's `op` CLI resolves them at session start, the sandbox never auths
+# to 1Password directly. See docs/secrets-via-1password.md.
 [users.slot-0]
 uid = 600
 hosts = [
@@ -71,7 +72,7 @@ hosts = [
 ]
 
 [users.slot-0.auth]
-CLAUDE_CODE_OAUTH_TOKEN = "/etc/isolator/keys/claude-oauth"
+CLAUDE_CODE_OAUTH_TOKEN = "op://Personal/claude-code/credential"
 
 # ── Pattern: same shape, different LLM provider ─────────────────────────────
 [users.slot-1]
@@ -81,7 +82,7 @@ hosts = [
 ]
 
 [users.slot-1.auth]
-OPENAI_API_KEY = "/etc/isolator/keys/openai"
+OPENAI_API_KEY = "op://Personal/openai-api-key/credential"
 
 # ── Pattern: inherit another user's shell / dotfiles / claude config ────────
 # `from = "slot-0"` means: at create time, copy slot-0's home dir as the
@@ -96,7 +97,7 @@ hosts = [
 ]
 
 [users.slot-2.auth]
-CLAUDE_CODE_OAUTH_TOKEN = "/etc/isolator/keys/claude-oauth"
+CLAUDE_CODE_OAUTH_TOKEN = "op://Personal/claude-code/credential"
 
 # ── Pattern: minimal user ───────────────────────────────────────────────────
 # No `hosts` list → only the global hosts apply. No auth → user provides
