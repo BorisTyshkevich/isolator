@@ -23,9 +23,13 @@ for __iso_v in $(env | sed -n 's/^\(ISO_TOKEN_[^=]*\)=.*/\1/p'); do
 done
 unset __iso_v
 
-# Ensure core tools are in PATH, then prepend local installs
-export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
-[[ ":$PATH:" != *":/opt/homebrew/bin:"* ]] && export PATH="/opt/homebrew/bin:$PATH"
+# PATH order: user-installed bins first, then homebrew (so `bash`, `git`,
+# etc. resolve to modern Homebrew versions instead of the macOS-bundled
+# bash 3.2 / git 2.x in /usr/bin), then everything else. Always prepend
+# /opt/homebrew/bin — duplicating a later entry is harmless (first match
+# wins); the real bug we fix here is /usr/bin coming before homebrew in
+# the default sudo-i PATH.
+export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:/opt/homebrew/bin:$PATH"
 
 # npm — local installs, no postinstall hooks
 export NPM_CONFIG_PREFIX="$HOME/.npm-global"
@@ -53,3 +57,12 @@ export BROWSER="/etc/isolator/open-browser"
 
 # Bypass permissions — fallback for interactive shells (iso user bash → claude)
 alias claude='claude --permission-mode bypassPermissions'
+
+# Make the prompt show which sandbox user we're in. Default macOS bash 3.2
+# prompt is `bash-3.2$` — useless in screenshots / multi-user debug sessions.
+if [[ -n "$BASH_VERSION" ]]; then
+    PS1='\u \W $ '
+elif [[ -n "$ZSH_VERSION" ]]; then
+    PS1='%n %1~ $ '
+fi
+export PS1
