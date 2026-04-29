@@ -207,10 +207,10 @@ exists and contains `AcceptEnv ISO_TOKEN_*`, then restart sshd
 Check that admin's shell has `SSH_AUTH_SOCK` set, the socket exists,
 and `iso -s` is the path being used (sudo path can't forward agent).
 
-**Want to keep using file paths during migration**: the legacy
-`/path/to/keyfile` syntax is still supported with a deprecation
-warning printed at session start. It will be removed in a future
-release.
+**`FATAL: auth value for <VAR> must be a 1Password URI`**: the value in
+`[users.<name>.auth]` isn't an `op://...` URI. Only 1Password
+references are accepted; the legacy file-path keyfile format was
+removed.
 
 ## Threat model
 
@@ -235,17 +235,15 @@ What it does **not** defend against:
 | Long-running sandbox processes | Hold stale values until restarted — same as file-based |
 | Memory dumps | Crash dumps may include env vars; same as any env-based scheme |
 
-## Migration from the old keyfile scheme
+## Note on the previous keyfile scheme
 
-1. For each `[users.<name>.auth]` entry that points at a file path,
-   create a 1Password item containing the file's contents and update
-   the config to use the `op://...` reference.
-2. Run `iso create <name>` once — this wipes the stale `~/.env`.
-3. Verify with `iso <name> bash; echo $SOME_VAR` that the value still
-   appears.
-4. Delete the original keyfile from `/etc/isolator/keys/<name>` (it's
-   no longer read).
+Earlier versions of isolator read auth values from
+`/etc/isolator/keys/*` files and wrote them into `~/.env` at user
+create time. That scheme has been removed entirely. To migrate:
 
-Old file paths continue to work with a deprecation warning until they
-are removed in a future release; you can migrate one secret at a
-time.
+1. For each `[users.<name>.auth]` entry, create a 1Password item with
+   the credential value and update the config to the `op://` URI.
+2. Run `iso create <name>` once — this wipes any stale `~/.env`.
+3. Verify with `iso <name> bash` that `$SOME_VAR` is set.
+4. Delete the keyfile from `/etc/isolator/keys/<name>` — it's no
+   longer read.

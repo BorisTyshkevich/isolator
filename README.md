@@ -40,16 +40,19 @@ sudo vi /etc/isolator/config.toml
 # 3. Enable Remote Login (for SSH-based isolation)
 #    System Settings → General → Sharing → Remote Login → ON
 
-# 4. Create sandbox users
+# 4. One-time host setup: deploy /etc/isolator + sshd drop-in
+sudo iso install
+
+# 5. Create sandbox users
 iso create acm
 iso create click
 
-# 5. Authenticate (first run only — stores in macOS keychain)
+# 6. Authenticate (first run only — stores in macOS keychain)
 iso acm claude        # /login → authenticate → done
 iso click claude      # same
 
-# 6. Apply firewall rules (optional)
-iso pf
+# 7. Apply firewall rules
+sudo iso pf
 ```
 
 ## The `iso` command
@@ -61,7 +64,9 @@ iso create <name> [options]       # Create an isolated user
 iso create --all [options]        # Create all users from config
 iso delete <name>                 # Delete user and home directory
 iso delete --all                  # Delete all users from config
-iso pf                            # Apply firewall rules
+iso install                       # One-time setup: deploy /etc/isolator files + sshd drop-in
+iso install --dry-run             # Preview file installs
+iso pf                            # Apply firewall rules (run after host edits)
 iso pf --dry-run                  # Print rules without loading
 iso list                          # List configured users
 iso <user> [command] [args...]    # Run command as isolated user (default: bash)
@@ -135,25 +140,22 @@ Re-authentication: if the token expires, just `/login` again.
 
 ### Other API keys (OPENAI_API_KEY, etc.)
 
-For non-Claude API keys, point at a 1Password reference in `config.toml`:
+Auth values must be 1Password URIs. Declare them in `config.toml`:
 
 ```toml
 [users.click.auth]
 OPENAI_API_KEY = "op://Personal/openai-api-key/credential"
 ```
 
-The admin's `op` CLI (1Password) resolves these at session start (one
-biometric prompt batch per `op signin` window). Resolved values are
-delivered to the sandbox process **in RAM** via `sudo --preserve-env`
-or `ssh SendEnv` — never written to disk, never persisted past the
+The admin's `op` CLI resolves these at session start (one biometric
+prompt batch per `op signin` window). Resolved values are delivered to
+the sandbox process **in RAM** via `sudo --preserve-env` or
+`ssh SendEnv` — never written to disk, never persisted past the
 session. Rotating a credential is a vault edit; no `iso create` re-run
 needed.
 
-Setup, vault layout, SSH agent forwarding, and migration from the old
-keyfile scheme: see [`docs/secrets-via-1password.md`](docs/secrets-via-1password.md).
-
-The legacy `/etc/isolator/keys/<file>` syntax still works with a
-deprecation warning; it will be removed in a future release.
+Setup, vault layout, SSH agent forwarding via `op ssh agent`, and the
+threat model are in [`docs/secrets-via-1password.md`](docs/secrets-via-1password.md).
 
 ### Codex
 

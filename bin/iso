@@ -536,17 +536,13 @@ def create_empty_keychain(name):
 def resolve_auth_secrets(user_config):
     """Resolve secrets declared in [users.<name>.auth] to a {var: value} dict.
 
-    Values in the auth table may be:
-      * "op://vault/item/field"   — resolved via 1Password CLI (preferred).
-      * "/path/to/keyfile"        — DEPRECATED; read from disk with a warning.
+    Values must be 1Password references in the form
+    `op://vault/item/field`. Resolved via the `op` CLI at session start;
+    returned in-memory. The caller delivers them via process env
+    (sudo --preserve-env / ssh SendEnv). No `.env` file is written.
 
-    Called at session start (cmd_run, cmd_remote), NOT at user-create time.
-    Secrets are returned in-memory; the caller is responsible for delivering
-    them via process env (sudo --preserve-env / ssh SendEnv). No `.env` file
-    is written.
-
-    Empty dict if no auth section. Exits with a clear message if `op` is
-    needed but unavailable / not signed in.
+    Empty dict if no auth section. Exits with a clear message on any
+    failure (op not installed, op session expired, malformed URI, etc).
 
     iso typically runs as root (re-exec'd via sudo). The `op` CLI uses the
     admin's app integration / config dir under their home and refuses to
@@ -564,43 +560,34 @@ def resolve_auth_secrets(user_config):
         op_prefix = []
 
     resolved = {}
-    used_deprecated_path = False
     for var, value_spec in auth.items():
-        if value_spec.startswith("op://"):
-            try:
-                r = subprocess.run(
-                    [*op_prefix, "op", "read", "--no-newline", value_spec],
-                    capture_output=True, text=True, check=False,
-                )
-            except FileNotFoundError:
-                print(f"FATAL: 'op' CLI not found. Install 1Password CLI "
-                      f"(brew install --cask 1password-cli) to resolve {var}.",
+        if not isinstance(value_spec, str) or not value_spec.startswith("op://"):
+            print(f"FATAL: auth value for {var} must be a 1Password URI "
+                  f"(op://vault/item/field); got {value_spec!r}",
+                  file=sys.stderr)
+            sys.exit(1)
+        try:
+            r = subprocess.run(
+                [*op_prefix, "op", "read", "--no-newline", value_spec],
+                capture_output=True, text=True, check=False,
+            )
+        except FileNotFoundError:
+            print(f"FATAL: 'op' CLI not found. Install 1Password CLI "
+                  f"(brew install --cask 1password-cli) to resolve {var}.",
+                  file=sys.stderr)
+            sys.exit(1)
+        if r.returncode != 0:
+            err = r.stderr.strip()
+            low = err.lower()
+            if "signed in" in low or "session" in low or "signin" in low:
+                print(f"FATAL: 1Password session not active. "
+                      f"Run: eval $(op signin)", file=sys.stderr)
+                print(f"       (then re-run this command)", file=sys.stderr)
+            else:
+                print(f"FATAL: failed to resolve {var} from {value_spec}: {err}",
                       file=sys.stderr)
-                sys.exit(1)
-            if r.returncode != 0:
-                err = r.stderr.strip()
-                low = err.lower()
-                if "signed in" in low or "session" in low or "signin" in low:
-                    print(f"FATAL: 1Password session not active. "
-                          f"Run: eval $(op signin)", file=sys.stderr)
-                    print(f"       (then re-run this command)", file=sys.stderr)
-                else:
-                    print(f"FATAL: failed to resolve {var} from {value_spec}: {err}",
-                          file=sys.stderr)
-                sys.exit(1)
-            resolved[var] = r.stdout
-        else:
-            used_deprecated_path = True
-            keypath = Path(value_spec)
-            if not keypath.exists():
-                print(f"  WARNING: key file {keypath} not found, skipping {var}",
-                      file=sys.stderr)
-                continue
-            resolved[var] = keypath.read_text().strip()
-
-    if used_deprecated_path:
-        print(f"  DEPRECATED: file-path auth values are deprecated. "
-              f"Switch to op://vault/item/field URIs.", file=sys.stderr)
+            sys.exit(1)
+        resolved[var] = r.stdout
 
     return resolved
 
