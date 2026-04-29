@@ -904,6 +904,7 @@ def install_etc_files(dry_run=False):
         ("profile", 0o644),
         ("CLAUDE.md", 0o644),
         ("open-browser", 0o755),
+        ("acm-bootstrap.bash", 0o644),
     ]
     for name, mode in isolator_files:
         src = repo_etc / name
@@ -1194,13 +1195,18 @@ def build_ssh_cmd(user, command, extra, args, cwd=None, send_env_vars=None):
     return cmd
 
 
-def cmd_run(user, command, args, use_ssh=False):
+def cmd_run(user, command, args, use_ssh=False, preserve_env=None):
     """Run a command as an isolated user. Default: sudo. With -s: SSH.
 
     Auth secrets declared in [users.<name>.auth] are resolved here (via
-    1Password CLI for op:// URIs, or read from disk for legacy file paths)
-    and delivered to the sandboxed process via the host transport's env
-    mechanism — never written to disk.
+    1Password CLI for op:// URIs) and delivered to the sandboxed process
+    via the host transport's env mechanism — never written to disk.
+
+    preserve_env: list of env-var names from the admin shell to pass through
+    to the sandbox (sudo path only). Mirrors sudo's own --preserve-env;
+    used by wrappers like iso-acm-launcher to forward session-specific
+    state (KUBECONFIG_DATA, KUBE_CONTEXT, etc.) without storing on disk.
+    Vars not present in os.environ are silently skipped.
     """
     user = validate_username(user)
     docker_status = ensure_docker_proxy(user)
@@ -1212,6 +1218,9 @@ def cmd_run(user, command, args, use_ssh=False):
     config = load_config()
     user_config = config.get("users", {}).get(user, {})
     resolved = resolve_auth_secrets(user_config)
+
+    # Admin-shell env passthrough (e.g., from iso-acm-launcher).
+    passthrough = {v: os.environ[v] for v in (preserve_env or []) if v in os.environ}
 
     if docker_status == "failed":
         print(f"WARNING: Docker proxy for {user} failed to start.")
@@ -1237,8 +1246,9 @@ def cmd_run(user, command, args, use_ssh=False):
         # rest of the profile loads normally.
         all_args = [command] + extra + args
         sudo_args = ["sudo"]
-        if resolved:
-            sudo_args.append(f"--preserve-env={','.join(resolved)}")
+        preserve_names = list(resolved) + list(passthrough)
+        if preserve_names:
+            sudo_args.append(f"--preserve-env={','.join(preserve_names)}")
         sudo_args += ["-u", user, "-i"]
         if cwd:
             quoted = " ".join(shlex.quote(a) for a in all_args)
@@ -1246,7 +1256,7 @@ def cmd_run(user, command, args, use_ssh=False):
             sudo_args += ["bash", "-c", shell_cmd]
         else:
             sudo_args += all_args
-        env = {**os.environ, **resolved}
+        env = {**os.environ, **resolved, **passthrough}
         os.execvpe("sudo", sudo_args, env)
 
 
@@ -1475,14 +1485,23 @@ def main():
 
     subcmd = argv[0]
 
-    # ── iso [-s] <user> [command] [args...] ──
+    # ── iso [-s] <user> [--preserve-env=VAR1,...] [command] [args...] ──
     if subcmd not in SUBCOMMANDS and not subcmd.startswith("-"):
         subcmd = validate_username(subcmd)
-        cmd = argv[1] if len(argv) >= 2 else "bash"
+        # Pull --preserve-env=... out of the argv before treating the rest
+        # as the user's command. Allowed only between user and command, not
+        # after — keeps positional args intact.
+        rest = argv[1:]
+        preserve_env = []
+        while rest and rest[0].startswith("--preserve-env="):
+            preserve_env += [v for v in rest[0].split("=", 1)[1].split(",") if v]
+            rest = rest[1:]
+        cmd = rest[0] if rest else "bash"
+        cmd_args = rest[1:]
         if cmd == "remote":
-            cmd_remote(subcmd, argv[2:])
+            cmd_remote(subcmd, cmd_args)
             return
-        cmd_run(subcmd, cmd, argv[2:], use_ssh=use_ssh)
+        cmd_run(subcmd, cmd, cmd_args, use_ssh=use_ssh, preserve_env=preserve_env)
         return
 
     # Everything below requires root (except list and chrome)

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# iso-acm — admin-side entry for running `acm` (Altinity k8s helper)
+# inside the iso `acm` sandbox.
+#
+# Defers to /usr/local/acm-shell/bin/acm with ACM_LAUNCHER pointing at
+# our companion script. acm-kube.sh detects the env var and exec's the
+# launcher instead of dropping into admin's shell. acm-shell otherwise
+# behaves identically.
+#
+# Usage:
+#   iso-acm <deployment> <env_filter> [clickhouse_password] [--k9s]
+#
+# Without iso, run `acm <args>` directly for the standalone behavior.
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export ACM_LAUNCHER="$SCRIPT_DIR/iso-acm-launcher"
+exec /usr/local/acm-shell/bin/acm "$@"

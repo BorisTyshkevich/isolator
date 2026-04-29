@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# iso-acm-launcher — invoked by acm-kube.sh when ACM_LAUNCHER is set
+# (see iso-acm). Bridges acm-shell session state into the iso `acm`
+# sandbox.
+#
+# Reads the rcfile that acm-kube.sh materialized at $ACM_RCFILE,
+# base64s the kubeconfig at $KUBECONFIG, and exec's `iso acm` with
+# every relevant env var preserved. The sandbox-side bootstrap at
+# /etc/isolator/acm-bootstrap.bash decodes the payload and starts an
+# interactive bash with the rcfile.
+set -euo pipefail
+
+[ -n "${ACM_RCFILE:-}" ] || { echo "iso-acm-launcher: ACM_RCFILE missing (acm-kube.sh hook not active?)" >&2; exit 1; }
+[ -n "${KUBECONFIG:-}" ] || { echo "iso-acm-launcher: KUBECONFIG missing" >&2; exit 1; }
+[ -f "$KUBECONFIG" ]     || { echo "iso-acm-launcher: KUBECONFIG file not found: $KUBECONFIG" >&2; exit 1; }
+
+# acm-kube.sh writes the rcfile with `<<EOF2` (unquoted heredoc), so
+# every $KUBECONFIG reference inside — including baked-in alias bodies
+# like `alias k9s='KUBECONFIG="$KUBECONFIG" command k9s ...'` — is
+# expanded to admin's path at write time. Substitute it for the
+# sandbox path so kubectl/helm/k9s all read a file the sandbox can
+# actually open. (The sandbox path is fixed because the iso `acm`
+# user has uid 603 and HOME=/Users/acm.)
+SANDBOX_KUBECONFIG="/Users/acm/tmp/acm-session.kubeconfig"
+ACM_RCFILE_CONTENT="$(sed "s|$KUBECONFIG|$SANDBOX_KUBECONFIG|g" "$ACM_RCFILE")"
+KUBECONFIG_DATA="$(base64 < "$KUBECONFIG")"
+export ACM_RCFILE_CONTENT KUBECONFIG_DATA
+
+# Comma-list of env vars that flow to the sandbox via iso --preserve-env.
+# Two payload vars (RCFILE_CONTENT, KUBECONFIG_DATA) plus all the
+# session env that the rcfile aliases reference.
+PRESERVE=(
+    ACM_RCFILE_CONTENT
+    KUBECONFIG_DATA
+    KUBE_CONTEXT
+    KUBE_NAMESPACE
+    ACM_MODE
+    ACM_SESSION_READY
+    ACM_ENV_NAME
+    ACM_PROMPT_MODE
+    EXPERT_CH_USER
+    EXPERT_CH_PASSWORD
+    CLICKHOUSE_USER
+    CLICKHOUSE_USERNAME
+    CLICKHOUSE_PASSWORD
+    ACM_API_KEY
+    ACM_API_URL
+    ACM_API_ENV_ID
+)
+preserve_csv="$(IFS=,; echo "${PRESERVE[*]}")"
+
+exec iso acm "--preserve-env=$preserve_csv" \
+    bash /etc/isolator/acm-bootstrap.bash
