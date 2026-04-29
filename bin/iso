@@ -250,6 +250,59 @@ def write_minimal_shell_config(name, shell_type):
         print(f"  Wrote minimal {rc_path}")
 
 
+def write_gitconfig(name, user_config):
+    """Write ~/.gitconfig with URL-prefix credential routing.
+
+    Maps from `[users.<name>.git_credentials]` config:
+        "https://github.com/Altinity"      = "ALTINITY_GITHUB_TOKEN"
+        "https://github.com/BorisTyshkevich" = "PERSONAL_GITHUB_TOKEN"
+
+    For each entry, emits a `[credential "<url>"]` block whose helper
+    reads the named env var at git-invocation time. Token values come
+    from `[users.<name>.auth]` via 1Password and are delivered in-RAM
+    to the sandbox shell. URLs not matching any prefix fall through to
+    anonymous HTTPS — fine for public repos.
+
+    `useHttpPath = true` is required so git matches the section name
+    against the full URL including path (otherwise only host matches).
+    """
+    creds = user_config.get("git_credentials", {})
+    if not creds:
+        return
+
+    home = Path(f"/Users/{name}")
+    gc = home / ".gitconfig"
+    if gc.exists():
+        print(f"  Skipping {gc} (already exists; edit by hand to reroute)")
+        return
+
+    lines = [
+        "# Isolator sandbox gitconfig.",
+        "# Routes HTTPS clone credentials by repo owner so each PAT only",
+        "# touches its scoped repos. Public repos work without a token.",
+        "# Add user.name / user.email and other personal config below.",
+        "",
+        "[credential]",
+        "    useHttpPath = true",
+        "",
+    ]
+    for url_prefix, var_name in creds.items():
+        # Helper: only emit creds for `get` (not store/erase). Reads env var
+        # at exec time so rotated tokens take effect on next session. The
+        # value is a git-config double-quoted string; inner `"` and `\` must
+        # be backslash-escaped.
+        helper_cmd = (
+            f'!f() {{ test \\"$1\\" = get && '
+            f'{{ echo username=git; echo \\"password=${var_name}\\"; }}; }}; f'
+        )
+        lines.append(f'[credential "{url_prefix}"]')
+        lines.append(f'    helper = "{helper_cmd}"')
+        lines.append("")
+
+    gc.write_text("\n".join(lines) + "\n")
+    print(f"  Wrote {gc} ({len(creds)} credential routes)")
+
+
 def install_sandbox_claude_md(name):
     """Install /etc/isolator/CLAUDE.md as ~/.claude/CLAUDE.md (locked).
 
@@ -419,8 +472,10 @@ def set_ownership(name):
     home = Path(f"/Users/{name}")
 
     # Sandbox shell rc files: user-editable. Owner can write; isolator
-    # group can read; no world access.
-    for f in [".bash_profile", ".bashrc", ".zprofile", ".zshrc"]:
+    # group can read; no world access. .gitconfig same treatment — sandbox
+    # user can add user.name/user.email; the credential helpers read tokens
+    # from env at git-invocation time, no secrets in the file.
+    for f in [".bash_profile", ".bashrc", ".zprofile", ".zshrc", ".gitconfig"]:
         path = home / f
         if path.exists():
             run(["chown", f"{name}:{ISOLATOR_GROUP}", str(path)])
@@ -576,6 +631,7 @@ def cmd_create(name, config, from_user=None, refresh_files=False):
     setup_home(name, admin)
     if do_copy:
         write_minimal_shell_config(name, shell_type)
+        write_gitconfig(name, user_config)
 
     # Sandbox CLAUDE.md (policy doc) is always refreshed so updates to
     # /etc/isolator/CLAUDE.md propagate. Locked root:wheel 444 by
