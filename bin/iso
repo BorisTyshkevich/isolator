@@ -544,10 +544,21 @@ def resolve_auth_secrets(user_config):
 
     Empty dict if no auth section. Exits with a clear message if `op` is
     needed but unavailable / not signed in.
+
+    iso typically runs as root (re-exec'd via sudo). The `op` CLI uses the
+    admin's app integration / config dir under their home and refuses to
+    read it when the effective UID doesn't match. Detect SUDO_USER and
+    drop privileges back to that user for the op call.
     """
     auth = user_config.get("auth", {})
     if not auth:
         return {}
+
+    sudo_user = os.environ.get("SUDO_USER")
+    if os.geteuid() == 0 and sudo_user:
+        op_prefix = ["sudo", "-u", sudo_user]
+    else:
+        op_prefix = []
 
     resolved = {}
     used_deprecated_path = False
@@ -555,7 +566,7 @@ def resolve_auth_secrets(user_config):
         if value_spec.startswith("op://"):
             try:
                 r = subprocess.run(
-                    ["op", "read", "--no-newline", value_spec],
+                    [*op_prefix, "op", "read", "--no-newline", value_spec],
                     capture_output=True, text=True, check=False,
                 )
             except FileNotFoundError:
