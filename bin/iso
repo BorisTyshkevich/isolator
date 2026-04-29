@@ -6,7 +6,9 @@ Usage:
     iso create --all [options]        Create all users from config
     iso delete <name>                 Delete an isolated user and its home
     iso delete --all                  Delete all users from config
-    iso pf                            Apply firewall rules from config
+    iso install                       Deploy /etc/isolator files + sshd drop-in (one-time setup)
+    iso install --dry-run             Print planned file installs without changing anything
+    iso pf                            Apply firewall rules from config (run after host edits)
     iso pf --dry-run                  Print firewall rules without loading
     iso list                          List configured users
     iso <user> [command] [args...]     Run command as isolated user (default: bash)
@@ -30,7 +32,8 @@ Examples:
     iso chrome                        # start safe browser for agents
     iso acm remote --bg               # connect from Claude Desktop
     iso delete acm
-    iso pf
+    iso install                       # one-time setup of /etc/isolator + sshd drop-in
+    iso pf                            # after editing hosts/users in config.toml
 """
 
 import json
@@ -1055,8 +1058,103 @@ def apply_docker_iptables(rules, dry_run=False):
         print("  Docker iptables rules loaded")
 
 
+def install_etc_files(dry_run=False):
+    """Deploy repo etc/ files to system locations (idempotent).
+
+    Files copied:
+      etc/profile             -> /etc/isolator/profile          (mode 644)
+      etc/CLAUDE.md           -> /etc/isolator/CLAUDE.md        (mode 644)
+      etc/open-browser        -> /etc/isolator/open-browser     (mode 755)
+      etc/sshd-isolator.conf  -> /etc/ssh/sshd_config.d/isolator.conf (mode 644)
+
+    /etc/isolator/config.toml is NOT touched (operator's source of truth).
+
+    sshd is reloaded only when its drop-in actually changes content.
+    """
+    repo_etc = Path(__file__).resolve().parent.parent / "etc"
+    if not repo_etc.is_dir():
+        print(f"  WARNING: repo etc/ not found at {repo_etc}; skipping etc install")
+        return
+
+    isolator_etc = Path("/etc/isolator")
+    if not isolator_etc.exists():
+        if dry_run:
+            print(f"  [dry-run] would mkdir {isolator_etc}")
+        else:
+            isolator_etc.mkdir(parents=True, exist_ok=True)
+            run(["chmod", "755", str(isolator_etc)], check=False)
+            run(["chown", "root:wheel", str(isolator_etc)], check=False)
+
+    isolator_files = [
+        ("profile", 0o644),
+        ("CLAUDE.md", 0o644),
+        ("open-browser", 0o755),
+    ]
+    for name, mode in isolator_files:
+        src = repo_etc / name
+        dst = isolator_etc / name
+        if not src.exists():
+            continue
+        if dst.exists() and dst.read_bytes() == src.read_bytes():
+            continue
+        if dry_run:
+            print(f"  [dry-run] would install {dst}")
+            continue
+        shutil.copyfile(src, dst)
+        os.chmod(dst, mode)
+        run(["chown", "root:wheel", str(dst)], check=False)
+        print(f"  Installed {dst}")
+
+    # sshd drop-in: only reload sshd when content actually changes.
+    sshd_src = repo_etc / "sshd-isolator.conf"
+    sshd_dst = Path("/etc/ssh/sshd_config.d/isolator.conf")
+    sshd_changed = False
+    if sshd_src.exists():
+        existing = sshd_dst.read_bytes() if sshd_dst.exists() else b""
+        if existing != sshd_src.read_bytes():
+            if dry_run:
+                print(f"  [dry-run] would install {sshd_dst} and reload sshd")
+            else:
+                sshd_dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(sshd_src, sshd_dst)
+                os.chmod(sshd_dst, 0o644)
+                run(["chown", "root:wheel", str(sshd_dst)], check=False)
+                print(f"  Installed {sshd_dst}")
+                sshd_changed = True
+
+    if sshd_changed:
+        print("  Reloading sshd (kickstart com.openssh.sshd)...")
+        r = subprocess.run(
+            ["launchctl", "kickstart", "-k", "system/com.openssh.sshd"],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            print(f"  WARNING: sshd reload failed: {r.stderr.strip()}")
+
+
+def cmd_install(dry_run=False):
+    """Deploy /etc/isolator system files + sshd drop-in (one-time setup).
+
+    Idempotent: re-running just refreshes whatever changed in the repo.
+    sshd is reloaded only when the drop-in's content actually changes.
+    Does NOT touch firewall rules — see `iso pf` for that.
+
+    Files synced:
+      etc/profile             -> /etc/isolator/profile
+      etc/CLAUDE.md           -> /etc/isolator/CLAUDE.md
+      etc/open-browser        -> /etc/isolator/open-browser
+      etc/sshd-isolator.conf  -> /etc/ssh/sshd_config.d/isolator.conf
+    """
+    install_etc_files(dry_run=dry_run)
+
+
 def cmd_pf(config, dry_run=False):
-    # macOS pf rules
+    """Generate and apply macOS pf rules + Docker iptables rules.
+
+    Run after editing config.toml (host changes, new users, etc.).
+    Pure firewall — does not touch files in /etc/isolator. See
+    `iso install` for that one-time setup.
+    """
     anchor = generate_anchor(config)
     if not anchor:
         return
@@ -1521,7 +1619,7 @@ def cmd_list(config):
 
 # ── Main ────────────────────────────────────────────────────────────────────
 
-SUBCOMMANDS = {"create", "delete", "pf", "list", "chrome"}
+SUBCOMMANDS = {"create", "delete", "install", "pf", "list", "chrome"}
 
 
 def parse_create_args(args):
@@ -1600,6 +1698,10 @@ def main():
                 cmd_delete(name)
         else:
             cmd_delete(argv[1])
+
+    elif subcmd == "install":
+        dry_run = "--dry-run" in argv
+        cmd_install(dry_run=dry_run)
 
     elif subcmd == "pf":
         dry_run = "--dry-run" in argv
