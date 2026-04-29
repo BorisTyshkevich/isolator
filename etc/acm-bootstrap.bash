@@ -21,14 +21,22 @@ RC="$HOME/tmp/acm-session.bashrc"
 printf '%s' "$KUBECONFIG_DATA" | base64 -d > "$KC"
 printf '%s' "$ACM_RCFILE_CONTENT" > "$RC"
 
-# acm-kube.sh writes the rcfile with `export KUBECONFIG="<admin-path>"`
-# baked in (heredoc expansion at write time). When the sandbox shell
-# sources it, that overrides our sandbox path. Append a final override
-# so the last definition wins. The early `kubectl config use-context`
-# calls in the rcfile still run with the admin path and fail silently
-# (>/dev/null 2>&1), but they're cosmetic — every alias passes
-# --context/--namespace explicitly.
-printf '\nexport KUBECONFIG=%q\n' "$KC" >> "$RC"
+# acm-kube.sh writes the rcfile with values baked in via heredoc
+# expansion at write time on the admin side. When the sandbox shell
+# sources it, those literals overwrite anything iso resolved into our
+# env. Append final-override exports so the last definition wins. The
+# early `kubectl config use-context` calls in the rcfile still run
+# with the (wrong) admin path and fail silently (>/dev/null 2>&1) but
+# they're cosmetic — every alias passes --context/--namespace
+# explicitly. Vars to override:
+#   - KUBECONFIG: heredoc baked admin's path; we need the sandbox path
+#   - ACM_API_KEY: heredoc baked admin's value (often empty after
+#     migrating to 1Password); we need iso's resolved value
+{
+    printf '\n# iso-acm: re-export values that may have been shadowed\n'
+    printf 'export KUBECONFIG=%q\n' "$KC"
+    printf 'export ACM_API_KEY=%q\n' "${ACM_API_KEY:-}"
+} >> "$RC"
 
 unset KUBECONFIG_DATA ACM_RCFILE_CONTENT
 export KUBECONFIG="$KC"
