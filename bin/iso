@@ -1257,6 +1257,13 @@ def cmd_run(user, command, args, use_ssh=False, preserve_env=None):
         else:
             sudo_args += all_args
         env = {**os.environ, **resolved, **passthrough}
+        # macOS sudo preserves admin's PATH/MANPATH from the parent env
+        # despite env_reset (no secure_path in sudoers, PATH not in
+        # env_keep). Strip them so the sandbox login shell rebuilds
+        # PATH from path_helper + /etc/isolator/profile, instead of
+        # inheriting /Users/<admin>/* dirs that no other user can read.
+        for v in ("PATH", "MANPATH"):
+            env.pop(v, None)
         os.execvpe("sudo", sudo_args, env)
 
 
