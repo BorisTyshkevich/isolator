@@ -50,3 +50,29 @@ Your outbound network is restricted to whitelisted hosts only. If a connection f
 > "Connection to <host> failed. It may need to be added to config.toml. Run `iso pf` after adding it."
 
 Localhost is always allowed — local services (Docker, Chrome DevTools, MCP servers) work without restriction.
+
+## Secrets and credential output — CRITICAL
+
+Every command output you produce is recorded: terminal scrollback, `~/.claude/projects/<id>.jsonl` on disk, and Anthropic's API logs (~30-day retention). A single `cat` of the wrong file or `echo` of the wrong env var leaks credentials irrevocably — rotating the secret remains the only fix.
+
+**Don't print credential values, directly or indirectly:**
+
+- **`cat`/`tail`/`head` of unfamiliar config files** — `~/.acm.env`, `~/.netrc`, `~/.aws/credentials`, `~/.acmctl.yaml`, `~/.clickhouse-client/config.xml`, `~/.ssh/*` all carry plaintext, including in commented-out lines.
+- **`head -c N` of any `op`/`curl`/`gh` output** — even ~8–12 chars of a fresh token narrows brute-force.
+- **`jq '.'`, `jq 'to_entries'`, `jq 'select(...)'` returning whole objects** — API JSON nests secrets in unexpected fields (TLS keys, AWS access keys, embedded passwords).
+- **`<tool> -v` / `--verbose` for tools that fetch credentials** — verbose dumps HTTP bodies.
+- **`bash -c "test \"$SECRET\""`-across-iso-boundary** — outer/inner shell quoting differences cause the inner shell to expand the value and emit it on filename-too-long etc. errors.
+
+**Do instead:**
+
+- Verify presence by **length only**: `${#VAR}`, `wc -c < <(cmd)`, `[ -n "$VAR" ] && echo set`.
+- Verify JSON shape with `jq 'keys'`, `jq 'type'`, `jq '.field | length'` — never `jq '.'`.
+- Use **config files or env vars** to feed secrets to subcommands, never `--password X` / `--token X` on the command line (visible in `ps eww`, in shell history, in error messages).
+- Pipe `op read` directly to env or file; never to a pager.
+- Filter captured stderr through `sed 's/<token-pattern>/<REDACTED>/g'` before printing back.
+
+**If a secret leaks anyway**: tell the user immediately, name the credential, add it to the rotation list. Don't keep working as if nothing happened.
+
+## Sandbox is not a leak shield
+
+The sandbox restricts your filesystem and network — it does NOT protect what you print. Tool outputs cross the sandbox boundary back to the admin's terminal and to Anthropic's API. The "Secrets and credential output" rules above apply *especially* in this sandbox: the admin's home (`/Users/<admin>/`) is unreadable, but admin secrets surface in env vars (e.g., `ACM_API_KEY` resolved from 1Password). Treat them as if they were your own.
