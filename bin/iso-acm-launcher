@@ -43,13 +43,12 @@ PRESERVE=(
     CLICKHOUSE_USER
     CLICKHOUSE_USERNAME
     CLICKHOUSE_PASSWORD
-    # ACM_API_KEY: NOT passthrough — resolved from 1Password via
-    # [users.acm.auth] so the sandbox gets the value even when admin
-    # has cleared it from ~/.acm.env. iso's resolved-vs-passthrough
-    # merge order would let an empty admin-side ACM_API_KEY shadow
-    # the 1P value, so omit it here entirely.
+    ACM_API_KEY
     ACM_API_URL
     ACM_API_ENV_ID
+    # New in acm-shell @ b845ae3: per-session creds via acmctl temp-creds
+    ACM_CLUSTER_ID
+    ACM_OPERATOR_CREDS
 )
 preserve_csv="$(IFS=,; echo "${PRESERVE[*]}")"
 
