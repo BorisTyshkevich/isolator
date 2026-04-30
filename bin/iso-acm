@@ -14,4 +14,23 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export ACM_LAUNCHER="$SCRIPT_DIR/iso-acm-launcher"
+
+# Resolve ACM_API_KEY from 1Password if admin doesn't already have it
+# in env. Reason: acm-kube.sh derives ACM_API_URL and ACM_API_ENV_ID
+# only when ACM_API_KEY is set; both are then forwarded to the
+# sandbox via the launcher's --preserve-env list. Without this step,
+# users who cleared ACM_API_KEY from ~/.acm.env (the recommended
+# 1Password migration) lose the API_URL/ENV_ID derivation in admin
+# shell, and the sandbox never sees them.
+#
+# Soft-fail: if op isn't installed or the session isn't active, skip
+# silently — sandbox will still get ACM_API_KEY via [users.acm.auth]
+# resolution at iso runtime; only the URL/ENV_ID derivation is lost.
+if [[ -z "${ACM_API_KEY:-}" ]] && command -v op >/dev/null 2>&1; then
+    if val="$(op read --no-newline op://Employee/ACM_API_KEY/credential 2>/dev/null)" && [[ -n "$val" ]]; then
+        export ACM_API_KEY="$val"
+    fi
+    unset val
+fi
+
 exec /usr/local/acm-shell/bin/acm "$@"
