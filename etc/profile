@@ -55,8 +55,23 @@ export DOCKER_NETWORK="iso-$(whoami)"
 # Default browser — wrapper for non-GUI users
 export BROWSER="/etc/isolator/open-browser"
 
-# Bypass permissions — fallback for interactive shells (iso user bash → claude)
-alias claude='claude --permission-mode bypassPermissions'
+# claude wrapper — adds bypassPermissions, and self-heals the missing
+# postinstall. NPM_CONFIG_ignore_scripts=true (above) blocks claude's
+# native-binary download during `npm install -g @anthropic-ai/claude-code`,
+# producing "claude native binary not installed" on first run. Detect
+# that case and run install.cjs once, marker-file gated. Skips entirely
+# when claude isn't an npm-global install (e.g., homebrew).
+claude() {
+    local _pkg
+    _pkg="$(npm root -g 2>/dev/null)/@anthropic-ai/claude-code"
+    if [[ -d "$_pkg" && -f "$_pkg/install.cjs" && ! -f "$_pkg/.iso-postinstall-done" ]]; then
+        echo "iso: running claude postinstall (one-time, ignore_scripts default blocks it)" >&2
+        if node "$_pkg/install.cjs" >&2; then
+            touch "$_pkg/.iso-postinstall-done"
+        fi
+    fi
+    command claude --permission-mode bypassPermissions "$@"
+}
 
 # Make the prompt show which sandbox user we're in. Default macOS bash 3.2
 # prompt is `bash-3.2$` — useless in screenshots / multi-user debug sessions.
