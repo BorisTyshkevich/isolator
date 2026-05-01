@@ -69,10 +69,14 @@ iso install --dry-run             # Preview file installs
 iso pf                            # Apply firewall rules (run after host edits)
 iso pf --dry-run                  # Print rules without loading
 iso list                          # List configured users
+iso copy <claude|codex> <user>    # Copy admin's claude/codex config to <user>
+                                  # [--from <src-user>]  (default: admin)
 iso <user> [command] [args...]    # Run command as isolated user (default: bash)
 iso <user> remote [--bg]         # Start sandboxed remote session for Claude Desktop
 iso <user> remote --status       # Show remote session status
 iso <user> remote --stop         # Stop remote session
+iso <user> acm [args...]         # Launch sandboxed acm-shell session as <user>
+                                  # (Altinity Cloud Manager helper; needs acm-shell)
 ```
 
 When running `claude`, `iso` automatically injects `--permission-mode bypassPermissions`.
@@ -102,7 +106,26 @@ iso acm remote --stop            # stop the session
 - Multiple sessions — run `iso acm remote --bg` and `iso click remote --bg` simultaneously
 - Works across machines — agent on a Linux server, Desktop on your Mac
 
-### Create options
+## Sandboxed acm-shell (Altinity)
+
+If you have [acm-shell](https://github.com/Altinity/acm-shell)
+installed at `/usr/local/acm-shell/`, `iso <user> acm [args...]` runs
+the kube-context selection / cluster-pick flow on the admin side, then
+exec's into the sandbox so kubectl/helm/k9s/clickhouse-client all run
+under the sandbox user with the sandbox's network whitelist.
+
+```bash
+iso acm acm <deployment> <env_filter>   # sandbox user = acm
+iso demo acm <deployment> <env_filter>  # sandbox user = demo (any iso user)
+```
+
+The legacy `iso-acm <args>` wrapper still works (defaults to user
+`acm`). The internals are documented at the top of `bin/iso-acm` and
+`bin/iso-acm-launcher`.
+
+## Creating sandbox users
+
+### Options
 
 ```bash
 iso create acm                              # create user
@@ -114,15 +137,62 @@ If the user doesn't exist in `config.toml`, it's auto-added with the next availa
 
 `iso create` is idempotent — safe to re-run. It overwrites config files but preserves the user account, home contents, and auth.
 
-### What `create` does
+### What it does
 
 1. Creates a hidden macOS user via `dscl` (skipped if exists)
 2. Sets up home with `chmod 700` and ACL for admin read/write access
-3. Detects source user's shell (bash/zsh) and copies the matching rc files
-4. Copies Claude Code config and curated Codex config from the source user
+3. Writes minimal shell rc files that source `/etc/isolator/profile`
+   (no inheritance from admin's shell — see [Shell config convention](#shell-config-convention))
+4. Installs `/etc/isolator/CLAUDE.md` as `~/.claude/CLAUDE.md` (locked
+   sandbox policy doc — agent can't rewrite its own restrictions)
 5. Creates per-user Docker network and workspace
 6. Sets up SSH key for passwordless access
-7. Makes config files root-owned and read-only (agent can't modify)
+7. Sandbox shell rc files stay user-editable; CLAUDE.md is root-owned 444
+
+`iso create` deliberately does **not** copy agent configs (Claude Code,
+Codex). Use [`iso copy`](#copying-agent-config) if you want to seed a
+new sandbox with your settings, MCP servers, or custom commands.
+
+## Copying agent config
+
+`iso copy` selectively transfers a small set of *configuration* files
+from your admin user (or any other user via `--from`) into a sandbox
+home. It does **not** copy auth or chat history — sandbox users
+authenticate themselves on first run (`claude /login`,
+`codex auth login`).
+
+```bash
+sudo iso copy claude acm                  # admin's claude config → acm
+sudo iso copy codex  acm                  # admin's codex config  → acm
+sudo iso copy claude acm --from click     # copy from another user
+```
+
+**`copy claude` writes:**
+
+| Path | Notes |
+|---|---|
+| `~/.claude/settings.json` | Verbatim. Warns if `hooks` is set — admin paths likely won't resolve in the sandbox; review after copy. |
+| `~/.claude/agents/`, `commands/`, `keybindings.json` | Verbatim snapshots. |
+| `~/.claude.json` | Selective: just `mcpServers` + a pre-trust entry for the sandbox home. Admin's onboarding flags and `oauthAccount` are dropped. |
+| `~/.claude/plugins/`, `skills/` | **Reset to empty** — admin paths in plugin configs would not resolve in the sandbox. Re-install in the sandbox. |
+
+**`copy codex` writes:**
+
+| Path | Notes |
+|---|---|
+| `~/.codex/config.toml` | Sanitized: `[projects.*]` trust entries dropped; `approval_policy = "never"` and `sandbox_mode = "danger-full-access"` forced. |
+| `~/.codex/AGENTS.md`, `agents/` | Verbatim snapshots. |
+| `~/.codex/plugins/`, `skills/` | **Reset to empty.** |
+
+**Never copied** (sandbox user must authenticate themselves):
+
+- Claude: tokens live in the per-user macOS Keychain.
+- Codex: `~/.codex/auth.json`. (Admin's auth.json on disk was the
+  inconsistency that made `iso create` stop copying these in the
+  first place — every other secret goes through 1Password URIs.)
+
+`iso copy` is destructive by design — it always overwrites. Re-run any
+time you want to refresh from admin.
 
 ## Authentication
 
@@ -159,7 +229,14 @@ threat model are in [`docs/secrets-via-1password.md`](docs/secrets-via-1password
 
 ### Codex
 
-Codex auth is handled by copying `~/.codex/auth.json` from the source user. Config is sanitized: project trust entries removed, bypass mode enabled.
+```bash
+iso acm codex auth login    # → browser flow → tokens saved to ~/.codex/auth.json
+```
+
+Each sandbox user authenticates themselves; admin's `auth.json` is
+never copied. Use [`iso copy codex <user>`](#copying-agent-config) to
+transfer admin's `config.toml` (sanitized: project trust entries
+dropped, bypass mode forced), `AGENTS.md`, and custom agents.
 
 ## SSH mode
 
@@ -237,28 +314,34 @@ Users are auto-added to config when created via `iso create <name>`.
 
 ## Shell config convention
 
-Isolator expects your shell config split into three files:
+Sandbox shells don't inherit admin's rc files — `iso create` writes a
+minimal `.bash_profile`/`.zshrc` per user that just sources
+`/etc/isolator/profile` (PATH, DOCKER_HOST, TMPDIR, 1Password
+unwrappers). The rc files stay user-editable; sandbox users add their
+own aliases / SDK paths / etc. on top.
 
-| File | Purpose | Copied? |
-|------|---------|:---:|
-| `~/.zprofile` / `~/.bash_profile` | PATH, LANG, EDITOR, SDK paths | Yes |
-| `~/.zshrc` / `~/.bashrc` | Aliases, completions, prompt | Yes |
-| `~/.env` | All tokens, API keys, credentials | **No** |
+The key rule for admin: **no secrets in your shell rc files**. Tokens
+and API keys live in 1Password; declare them in `config.toml` under
+`[users.<name>.auth]` as `op://...` URIs. They get unwrapped into the
+sandbox process at session start, in RAM, never on disk. See
+[`docs/secrets-via-1password.md`](docs/secrets-via-1password.md).
 
-The key rule: **no secrets in your shell rc files**. Put all `*_KEY`, `*_TOKEN`, `*_SECRET` exports into `~/.env`. This file is never copied. Isolated users get their own auth via keychain or injected `.env`.
+### What `iso create` writes
 
-### What gets copied
+- Minimal `.bash_profile`/`.bashrc`/`.zprofile`/`.zshrc` (3 lines each)
+- `~/.claude/CLAUDE.md` — sandbox policy doc, root-locked
+- Workspace at `/Users/Workspaces/<user>/`
+- SSH key + authorized_keys for `iso -s`-mode access
+- Per-user Docker network + filtered socket
 
-From the source user (admin or `--from`):
+### What `iso create` does NOT touch
 
-- Shell rc files — with isolator profile appended
-- `~/.claude/settings.json` — merged with `bypassPermissions` mode
-- `~/.claude.json` — MCP servers, OAuth account, onboarding state
-- `~/.claude/skills` symlink, `~/.claude/plugins/` directory
-- `~/.codex/config.toml` — with trusted project entries removed
-- `~/.codex/auth.json`, `plugins/`, `skills/`, `agents/`
-
-What does NOT get copied: `~/.env`, `~/.ssh`, `~/.aws`, `~/.kube`, session histories, debug caches, sqlite DBs, per-project configs.
+- `~/.claude/settings.json`, `~/.claude.json`, `~/.codex/config.toml` —
+  use [`iso copy`](#copying-agent-config) to seed these from admin.
+- `~/.env`, `~/.ssh/id_*`, `~/.aws/`, `~/.kube/`, `~/.netrc` — never
+  copied. Per-sandbox auth via 1Password URIs in `config.toml`.
+- Chat history (`~/.claude/projects/`, `~/.codex/sessions/`),
+  caches, sqlite DBs, IDE state.
 
 ## Workspaces
 
