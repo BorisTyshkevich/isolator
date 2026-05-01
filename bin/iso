@@ -8,6 +8,8 @@ Usage:
     iso delete --all                  Delete all users from config
     iso install                       Deploy /etc/isolator files + sshd drop-in (one-time setup)
     iso install --dry-run             Print planned file installs without changing anything
+    iso copy <claude|codex> <user>    Copy admin's claude/codex config to <user> (overwrites)
+                                      [--from <src-user>] (default: admin)
     iso pf                            Apply firewall rules from config (run after host edits)
     iso pf --dry-run                  Print firewall rules without loading
     iso list                          List configured users
@@ -37,6 +39,7 @@ Examples:
     iso pf                            # after editing hosts/users in config.toml
 """
 
+import json
 import os
 import re
 import shlex
@@ -1436,6 +1439,273 @@ def cmd_chrome(args):
     print(f"  DevTools: http://127.0.0.1:{port}")
 
 
+# ── Copy command ────────────────────────────────────────────────────────────
+#
+# `iso copy <claude|codex> <user> [--from <src>]` selectively copies
+# admin's claude/codex config into a sandbox user's home. Always
+# overwrites. Deliberately does NOT copy:
+#   - auth (Claude: per-user macOS Keychain; Codex: auth.json — sandbox
+#     user runs `claude /login` / `codex auth login` themselves)
+#   - chat history / sessions / logs
+#   - admin's plugins or skills (left as empty dirs; future copy mode
+#     may handle these with path-rewrite)
+
+CODEX_CONFIG_OVERRIDES = {
+    "approval_policy": "never",
+    "sandbox_mode": "danger-full-access",
+}
+
+
+def _replace_path(src, dst):
+    """Copy file or directory from src to dst, replacing dst if it exists.
+    Used for verbatim snapshot copies."""
+    if dst.is_symlink() or dst.exists():
+        if dst.is_dir() and not dst.is_symlink():
+            shutil.rmtree(dst)
+        else:
+            dst.unlink()
+    if src.is_dir():
+        shutil.copytree(src, dst)
+    else:
+        shutil.copy2(src, dst)
+
+
+def _own_and_perm(path, name, file_mode=0o600, dir_mode=0o700):
+    """chown <name>:isolator and chmod path (recursive on dirs)."""
+    if path.is_dir():
+        run(["chown", "-R", f"{name}:{ISOLATOR_GROUP}", str(path)])
+        for p in [path] + list(path.rglob("*")):
+            if p.is_symlink():
+                continue
+            p.chmod(dir_mode if p.is_dir() else file_mode)
+    else:
+        run(["chown", f"{name}:{ISOLATOR_GROUP}", str(path)])
+        path.chmod(file_mode)
+
+
+def _empty_dir(path, name):
+    """Replace path with an empty directory, owned by <name>:isolator."""
+    if path.is_symlink() or (path.exists() and not path.is_dir()):
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+    path.mkdir()
+    _own_and_perm(path, name)
+
+
+# ── TOML emitter (sanitize Codex config.toml on copy) ──────────────
+# Stdlib has no TOML writer; this is a small custom emitter just for
+# Codex config — handles scalars, scalar arrays, nested tables, and
+# arrays of tables. Brought back from pre-d5913c1 for the copy command.
+
+def _toml_escape(s):
+    return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+# TOML "bare keys" allow only A-Za-z0-9_-. Anything else (dot, slash,
+# space, etc.) needs a quoted key, otherwise dots in the key get
+# parsed as a dotted-key path on the next read. (Hit this with codex's
+# `[tui.model_availability_nux]` table whose scalar keys include
+# `gpt-5.5` — without quoting, `gpt-5.5 = 1` is parsed as the table
+# `gpt-5` with key `5`, flipping a scalar into a map.)
+_TOML_BARE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _toml_key(k):
+    if _TOML_BARE_KEY_RE.fullmatch(k):
+        return k
+    return f'"{_toml_escape(k)}"'
+
+
+def _toml_emit_value(v):
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, int) or isinstance(v, float):
+        return str(v)
+    if isinstance(v, str):
+        return f'"{_toml_escape(v)}"'
+    if isinstance(v, list):
+        return "[" + ", ".join(_toml_emit_value(x) for x in v) + "]"
+    raise TypeError(f"unsupported TOML value type: {type(v).__name__}")
+
+
+def _toml_emit(data, prefix=""):
+    out = []
+    scalars = {k: v for k, v in data.items() if not isinstance(v, dict)
+               and not (isinstance(v, list) and v and all(isinstance(x, dict) for x in v))}
+    for k, v in scalars.items():
+        out.append(f"{_toml_key(k)} = {_toml_emit_value(v)}")
+    for k, v in data.items():
+        if isinstance(v, dict):
+            qk = _toml_key(k)
+            section = f"{prefix}.{qk}" if prefix else qk
+            out.append(f"\n[{section}]")
+            out.append(_toml_emit(v, section))
+        elif isinstance(v, list) and v and all(isinstance(x, dict) for x in v):
+            qk = _toml_key(k)
+            section = f"{prefix}.{qk}" if prefix else qk
+            for item in v:
+                out.append(f"\n[[{section}]]")
+                out.append(_toml_emit(item, section))
+    return "\n".join(line for line in out if line)
+
+
+def sanitize_codex_config(src, dst):
+    """Parse codex config.toml, drop project trust entries, force bypass mode."""
+    try:
+        with open(src, "rb") as f:
+            data = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        print(f"  ERROR parsing {src}: {e}")
+        return False
+    removed = 0
+    if isinstance(data.get("projects"), dict):
+        removed = len(data["projects"])
+        del data["projects"]
+    for k, v in CODEX_CONFIG_OVERRIDES.items():
+        data[k] = v
+    dst.write_text(_toml_emit(data) + "\n")
+    print(f"  Copied config.toml (dropped {removed} project trust entries, forced bypass mode)")
+    return True
+
+
+def copy_claude(src_home, dst_home, name):
+    src = src_home / ".claude"
+    dst = dst_home / ".claude"
+    if not src.exists():
+        print(f"  No {src}; nothing to copy")
+        return
+    # The directory was created by `iso create` (it holds CLAUDE.md). We
+    # write into it without touching its ownership, and explicitly skip
+    # CLAUDE.md (root-locked sandbox policy).
+    dst.mkdir(exist_ok=True)
+
+    # 1. settings.json — verbatim, warn on hooks (admin paths likely won't resolve in the sandbox).
+    s = src / "settings.json"
+    if s.exists():
+        try:
+            data = json.loads(s.read_text())
+            if "hooks" in data:
+                print(f"  WARN: settings.json contains 'hooks' — admin commands/paths may not resolve in the sandbox; review {dst / 'settings.json'} after copy")
+        except json.JSONDecodeError:
+            pass
+        d = dst / "settings.json"
+        _replace_path(s, d)
+        _own_and_perm(d, name)
+        print(f"  Copied settings.json")
+
+    # 2. agents/ and commands/ — verbatim snapshots
+    for sub in ("agents", "commands"):
+        s = src / sub
+        if s.is_dir():
+            d = dst / sub
+            _replace_path(s, d)
+            _own_and_perm(d, name)
+            print(f"  Copied {sub}/")
+
+    # 3. keybindings.json
+    s = src / "keybindings.json"
+    if s.exists():
+        d = dst / "keybindings.json"
+        _replace_path(s, d)
+        _own_and_perm(d, name)
+        print(f"  Copied keybindings.json")
+
+    # 4. ~/.claude.json — selective: just mcpServers + pre-trust sandbox home.
+    src_json = src_home / ".claude.json"
+    data = {}
+    if src_json.exists():
+        try:
+            full = json.loads(src_json.read_text())
+            if "mcpServers" in full:
+                data["mcpServers"] = full["mcpServers"]
+                print(f"  Copying mcpServers: {list(full['mcpServers'].keys())}")
+        except json.JSONDecodeError:
+            pass
+    data["projects"] = {
+        str(dst_home): {
+            "allowedTools": [],
+            "hasTrustDialogAccepted": True,
+        }
+    }
+    dst_json = dst_home / ".claude.json"
+    dst_json.write_text(json.dumps(data, indent=2) + "\n")
+    _own_and_perm(dst_json, name)
+    print(f"  Wrote .claude.json (mcpServers + sandbox-home pre-trust)")
+
+    # 5. plugins/ and skills/ — left empty by design.
+    for sub in ("plugins", "skills"):
+        _empty_dir(dst / sub, name)
+        print(f"  Reset empty {sub}/")
+
+
+def copy_codex(src_home, dst_home, name):
+    src = src_home / ".codex"
+    dst = dst_home / ".codex"
+    if not src.exists():
+        print(f"  No {src}; nothing to copy")
+        return
+    new_dir = not dst.exists()
+    dst.mkdir(exist_ok=True)
+
+    # 1. config.toml — sanitize: drop projects, force bypass-mode keys.
+    s = src / "config.toml"
+    if s.exists():
+        d = dst / "config.toml"
+        sanitize_codex_config(s, d)
+        _own_and_perm(d, name)
+
+    # 2. AGENTS.md — verbatim
+    s = src / "AGENTS.md"
+    if s.exists():
+        d = dst / "AGENTS.md"
+        _replace_path(s, d)
+        _own_and_perm(d, name)
+        print(f"  Copied AGENTS.md")
+
+    # 3. agents/ — verbatim snapshot
+    s = src / "agents"
+    if s.is_dir():
+        d = dst / "agents"
+        _replace_path(s, d)
+        _own_and_perm(d, name)
+        print(f"  Copied agents/")
+
+    # 4. plugins/ and skills/ — left empty by design.
+    for sub in ("plugins", "skills"):
+        _empty_dir(dst / sub, name)
+        print(f"  Reset empty {sub}/")
+
+    # If we just created .codex, fix its top-level perms too.
+    if new_dir:
+        run(["chown", f"{name}:{ISOLATOR_GROUP}", str(dst)])
+        dst.chmod(0o700)
+
+
+def cmd_copy(target, name, from_user):
+    if target not in ("claude", "codex"):
+        print(f"Unknown copy target {target!r} — must be 'claude' or 'codex'")
+        sys.exit(1)
+    name = validate_username(name)
+    from_user = validate_username(from_user)
+    if not user_exists(name):
+        print(f"User {name!r} doesn't exist; create it first with `iso create {name}`")
+        sys.exit(1)
+    if not user_exists(from_user):
+        print(f"Source user {from_user!r} doesn't exist")
+        sys.exit(1)
+    src_home = Path(f"/Users/{from_user}")
+    dst_home = Path(f"/Users/{name}")
+    if not src_home.exists() or not dst_home.exists():
+        print(f"Home directory missing: src={src_home} dst={dst_home}")
+        sys.exit(1)
+    print(f"Copying {target} config from {from_user} -> {name}")
+    if target == "claude":
+        copy_claude(src_home, dst_home, name)
+    else:
+        copy_codex(src_home, dst_home, name)
+
+
 # ── List command ────────────────────────────────────────────────────────────
 
 def cmd_list(config):
@@ -1452,7 +1722,7 @@ def cmd_list(config):
 
 # ── Main ────────────────────────────────────────────────────────────────────
 
-SUBCOMMANDS = {"create", "delete", "install", "pf", "list", "chrome"}
+SUBCOMMANDS = {"create", "delete", "install", "pf", "list", "chrome", "copy"}
 
 
 def parse_create_args(args):
@@ -1560,6 +1830,25 @@ def main():
 
     elif subcmd == "chrome":
         cmd_chrome(argv[1:])
+
+    elif subcmd == "copy":
+        if len(argv) < 3:
+            print("Usage: iso copy <claude|codex> <user> [--from <src-user>]")
+            sys.exit(1)
+        target = argv[1]
+        name = argv[2]
+        from_user = None
+        rest = argv[3:]
+        while rest:
+            if rest[0] == "--from" and len(rest) > 1:
+                from_user = rest[1]
+                rest = rest[2:]
+            else:
+                print(f"Unknown arg: {rest[0]!r}")
+                sys.exit(1)
+        if from_user is None:
+            from_user = os.environ.get("SUDO_USER") or get_admin()
+        cmd_copy(target, name, from_user)
 
     elif subcmd == "list":
         cmd_list(config)
