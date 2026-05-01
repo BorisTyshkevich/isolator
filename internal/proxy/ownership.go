@@ -22,10 +22,15 @@ type OwnershipChecker struct {
 // proxy's user. Returns nil on owned, *CreateError otherwise.
 //
 // 1. subrequest GET /v<ver>/containers/<id>/json
-// 2. 404 -> "container not found"
-// 3. non-200 -> "container inspect failed"
+// 2. 404 -> 404 "No such container: <id>" (pass-through; Docker's own phrasing)
+// 3. non-200 -> 403 "container inspect failed"
 // 4. parse JSON, look at Config.Labels[OwnerLabel], fallback to top-level Labels.
-// 5. if missing or != user -> "container '<id>' is not owned by <user>"
+// 5. if missing or != user -> 403 "container '<id>' is not owned by <user>"
+//
+// 404 is *not* an isolation event — there's nothing to isolate from when the
+// container doesn't exist on the daemon. Wrapping it as 403 used to break
+// idempotent probe-then-create flows like `docker buildx create --bootstrap`
+// and `docker compose up` for named containers.
 func (o *OwnershipChecker) CheckContainerOwned(apiVersion, containerID string) error {
 	path := fmt.Sprintf("/%s/containers/%s/json", apiVersion, containerID)
 	status, body, err := subrequest(o.UpstreamSocket, path)
@@ -36,7 +41,7 @@ func (o *OwnershipChecker) CheckContainerOwned(apiVersion, containerID string) e
 	case 200:
 		// fallthrough
 	case 404:
-		return newCreateErr(403, "isolator: container not found")
+		return newCreateErr(404, "No such container: %s", containerID)
 	default:
 		return newCreateErr(403, "isolator: container inspect failed")
 	}
@@ -57,8 +62,8 @@ func (o *OwnershipChecker) CheckContainerOwned(apiVersion, containerID string) e
 // proxy's user. Returns nil on owned, *CreateError otherwise.
 //
 // 1. subrequest GET /v<ver>/exec/<id>/json
-// 2. 404 -> "exec not found"
-// 3. non-200 -> "exec inspect failed"
+// 2. 404 -> 404 "No such exec instance: <id>" (pass-through; not an isolation event)
+// 3. non-200 -> 403 "exec inspect failed"
 // 4. parse, extract ContainerID; if empty -> "exec inspect missing ContainerID"
 // 5. delegate to CheckContainerOwned.
 func (o *OwnershipChecker) CheckExecOwned(apiVersion, execID string) error {
@@ -71,7 +76,7 @@ func (o *OwnershipChecker) CheckExecOwned(apiVersion, execID string) error {
 	case 200:
 		// fallthrough
 	case 404:
-		return newCreateErr(403, "isolator: exec not found")
+		return newCreateErr(404, "No such exec instance: %s", execID)
 	default:
 		return newCreateErr(403, "isolator: exec inspect failed")
 	}

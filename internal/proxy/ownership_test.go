@@ -107,13 +107,17 @@ func TestContainerOwned(t *testing.T) {
 		status      int
 		body        string
 		wantBlocked bool
+		wantStatus  int // CreateError.Status when blocked
 		errSub      string
 	}{
-		{"container owned", 200, `{"Config":{"Labels":{"dev.boris.isolator.user":"acm"}}}`, false, ""},
-		{"container wrong owner", 200, `{"Config":{"Labels":{"dev.boris.isolator.user":"other"}}}`, true, "is not owned by acm"},
-		{"container no label", 200, `{"Config":{"Labels":{}}}`, true, "is not owned by acm"},
-		{"container not found", 404, `{"message":"not found"}`, true, "container not found"},
-		{"container inspect 500", 500, `{"message":"error"}`, true, "container inspect failed"},
+		{"container owned", 200, `{"Config":{"Labels":{"dev.boris.isolator.user":"acm"}}}`, false, 0, ""},
+		{"container wrong owner", 200, `{"Config":{"Labels":{"dev.boris.isolator.user":"other"}}}`, true, 403, "is not owned by acm"},
+		{"container no label", 200, `{"Config":{"Labels":{}}}`, true, 403, "is not owned by acm"},
+		// 404: pass-through with Docker's standard phrasing — buildx/compose
+		// rely on this to detect "container does not exist yet" before
+		// creating it. See ownership.go:CheckContainerOwned doc comment.
+		{"container not found", 404, `{"message":"not found"}`, true, 404, "No such container"},
+		{"container inspect 500", 500, `{"message":"error"}`, true, 403, "container inspect failed"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -126,8 +130,8 @@ func TestContainerOwned(t *testing.T) {
 					t.Fatal("expected blocked")
 				}
 				var ce *CreateError
-				if !errors.As(err, &ce) || ce.Status != 403 {
-					t.Errorf("want 403 CreateError, got %+v", err)
+				if !errors.As(err, &ce) || ce.Status != tc.wantStatus {
+					t.Errorf("want status=%d CreateError, got %+v", tc.wantStatus, err)
 				}
 				if !strings.Contains(err.Error(), tc.errSub) {
 					t.Errorf("error %q does not contain %q", err.Error(), tc.errSub)
@@ -175,9 +179,11 @@ func TestExecOwned(t *testing.T) {
 			wantBlocked: true, errSub: "is not owned by acm",
 		},
 		{
+			// 404 passes through unchanged so probe-then-create flows
+			// see Docker's standard "no such instance" rather than 403.
 			name:       "exec not found",
 			execStatus: 404, execBody: `{"message":"not found"}`,
-			wantBlocked: true, errSub: "exec not found",
+			wantBlocked: true, errSub: "No such exec instance",
 		},
 		{
 			name:       "exec missing ContainerID",

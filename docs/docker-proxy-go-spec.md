@@ -755,11 +755,19 @@ Parse the URL path into segments: `["v1.51", "containers", "<id>", "<action>"]`.
 ### Ownership Check Procedure
 
 1. Make a **subrequest** (see section 13): `GET /v<ver>/containers/<id>/json` to upstream.
-2. If upstream returns 404 -> **403**: `"container not found"`.
+2. If upstream returns 404 -> **404**: `"No such container: <id>"` (pass-through).
 3. If upstream returns non-200 -> **403**: `"container inspect failed"`.
 4. Parse response body as JSON.
 5. Extract labels: `data.Config.Labels` (fallback to `data.Labels` if Config is absent).
 6. If `labels["dev.boris.isolator.user"] != user` -> **403**: `"container '<id>' is not owned by <user>"`.
+
+> **404 is intentionally not wrapped as 403.** A non-existent container is
+> not an isolation event — there's nothing to isolate from. Returning 404
+> with Docker's standard "No such container" phrasing preserves the
+> upstream daemon's semantics and lets idempotent probe-then-create flows
+> work (e.g. `docker buildx create --bootstrap` and `docker compose up`
+> with `--name`). The actual isolation boundary is step 6: the
+> ownership-label check, which only fires when the container exists.
 
 ### Exec Ownership Check
 
@@ -767,7 +775,7 @@ For exec action endpoints matching `/v<ver>/exec/<id>/(start|resize|json)`:
 
 1. Extract exec ID from path segments.
 2. Make subrequest: `GET /v<ver>/exec/<id>/json` to upstream.
-3. If 404 -> **403**: `"exec not found"`.
+3. If 404 -> **404**: `"No such exec instance: <id>"` (pass-through, same rationale as the container case).
 4. If non-200 -> **403**: `"exec inspect failed"`.
 5. Parse JSON, extract `ContainerID` field.
 6. If `ContainerID` is empty -> **403**: `"exec inspect missing ContainerID"`.
