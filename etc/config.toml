@@ -23,6 +23,10 @@ hosts = [
     "statsig.anthropic.com",
     "sentry.io",
     "downloads.claude.ai",
+    # OpenAI / Codex CLI — OAuth + chatgpt.com API + api.openai.com (API-key path)
+    "auth.openai.com",
+    "chatgpt.com",
+    "api.openai.com",
     # GitHub — git, gh CLI, npm packages, release downloads
     "github.com",
     "api.github.com",
