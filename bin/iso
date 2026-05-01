@@ -16,6 +16,7 @@ Usage:
     iso <user> remote [--bg]          Start sandboxed remote session for Claude Desktop
     iso <user> remote --status        Show remote session status
     iso <user> remote --stop          Stop remote session
+    iso <user> acm [args...]          Launch sandboxed acm-shell session as <user>
     iso chrome [--port PORT]          Start agent Chrome (empty profile, default 9222)
     iso chrome --stop                 Stop agent Chrome
 
@@ -1508,6 +1509,15 @@ def main():
         if cmd == "remote":
             cmd_remote(subcmd, cmd_args)
             return
+        if cmd == "acm":
+            # Defer to the iso-acm wrapper, which runs admin-side
+            # acm-shell (kube-context selection, cluster pick) and then
+            # exec's into the sandbox via iso-acm-launcher. We just tell
+            # the launcher which iso user to land in.
+            iso_acm = Path(__file__).resolve().parent / "iso-acm"
+            env = os.environ.copy()
+            env["ACM_SANDBOX_USER"] = subcmd
+            os.execve(str(iso_acm), [str(iso_acm)] + cmd_args, env)
         cmd_run(subcmd, cmd, cmd_args, use_ssh=use_ssh, preserve_env=preserve_env)
         return
 

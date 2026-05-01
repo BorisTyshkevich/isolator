@@ -19,9 +19,10 @@ set -euo pipefail
 # like `alias k9s='KUBECONFIG="$KUBECONFIG" command k9s ...'` — is
 # expanded to admin's path at write time. Substitute it for the
 # sandbox path so kubectl/helm/k9s all read a file the sandbox can
-# actually open. (The sandbox path is fixed because the iso `acm`
-# user has uid 603 and HOME=/Users/acm.)
-SANDBOX_KUBECONFIG="/Users/acm/tmp/acm-session.kubeconfig"
+# actually open. The sandbox HOME is /Users/<user> by macOS convention;
+# ACM_SANDBOX_USER picks the iso user (defaults to `acm`).
+SANDBOX_USER="${ACM_SANDBOX_USER:-acm}"
+SANDBOX_KUBECONFIG="/Users/${SANDBOX_USER}/tmp/acm-session.kubeconfig"
 ACM_RCFILE_CONTENT="$(sed "s|$KUBECONFIG|$SANDBOX_KUBECONFIG|g" "$ACM_RCFILE")"
 KUBECONFIG_DATA="$(base64 < "$KUBECONFIG")"
 export ACM_RCFILE_CONTENT KUBECONFIG_DATA
@@ -52,5 +53,5 @@ PRESERVE=(
 )
 preserve_csv="$(IFS=,; echo "${PRESERVE[*]}")"
 
-exec iso acm "--preserve-env=$preserve_csv" \
+exec iso "$SANDBOX_USER" "--preserve-env=$preserve_csv" \
     bash /etc/isolator/acm-bootstrap.bash
