@@ -383,6 +383,13 @@ def resolve_auth_secrets(user_config):
     returned in-memory. The caller delivers them via process env
     (sudo --preserve-env / ssh SendEnv). No `.env` file is written.
 
+    Append `?optional` to the URI to soft-skip if the item or field is
+    missing in 1Password (other failures — op not installed, session
+    expired, network — remain fatal even with ?optional). Useful for
+    forward-compatible configs where the 1P item may or may not exist
+    yet, e.g.:
+        GITHUB_TOKEN = "op://Employee/gh-altinity/password?optional"
+
     Empty dict if no auth section. Exits with a clear message on any
     failure (op not installed, op session expired, malformed URI, etc).
 
@@ -408,9 +415,18 @@ def resolve_auth_secrets(user_config):
                   f"(op://vault/item/field); got {value_spec!r}",
                   file=sys.stderr)
             sys.exit(1)
+        # `?optional` suffix marks vars that should be silently skipped
+        # if the 1P item or field is missing. Other failures (op not
+        # installed, session expired, network) remain fatal — opt-in
+        # leniency only, so a typo in the URI can't silently drop a var.
+        optional = False
+        op_uri = value_spec
+        if op_uri.endswith("?optional"):
+            optional = True
+            op_uri = op_uri[: -len("?optional")]
         try:
             r = subprocess.run(
-                [*op_prefix, "op", "read", "--no-newline", value_spec],
+                [*op_prefix, "op", "read", "--no-newline", op_uri],
                 capture_output=True, text=True, check=False,
             )
         except FileNotFoundError:
@@ -425,9 +441,18 @@ def resolve_auth_secrets(user_config):
                 print(f"FATAL: 1Password session not active. "
                       f"Run: eval $(op signin)", file=sys.stderr)
                 print(f"       (then re-run this command)", file=sys.stderr)
-            else:
-                print(f"FATAL: failed to resolve {var} from {value_spec}: {err}",
-                      file=sys.stderr)
+                sys.exit(1)
+            # Item-or-field absent. Soft-skip when ?optional was set,
+            # otherwise fatal. Match phrases op emits in both shapes.
+            absent = (
+                "isn't an item" in low
+                or "does not have a field" in low
+                or "no such item" in low
+            )
+            if optional and absent:
+                continue
+            print(f"FATAL: failed to resolve {var} from {value_spec}: {err}",
+                  file=sys.stderr)
             sys.exit(1)
         resolved[var] = r.stdout
 

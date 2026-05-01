@@ -66,6 +66,20 @@ The URI format is `op://<vault>/<item>/<field>`. You can copy a
 reference from the 1Password GUI: right-click an item → "Copy Secret
 Reference".
 
+#### Optional entries
+
+Append `?optional` to the URI when the 1P item may legitimately not
+exist yet — `iso` will then silently skip the var instead of failing
+the whole session start:
+
+```toml
+GITHUB_TOKEN = "op://Employee/gh-altinity/password?optional"
+```
+
+Other failure modes (op not installed, session expired, network
+error) remain fatal even with `?optional`. Opt-in only — a typo in
+a non-optional URI still aborts the session, which is what you want.
+
 `iso pf` is unaffected by these changes — it doesn't need secrets.
 
 ### 4. Install the sshd drop-in (only if you use `iso -s`)
