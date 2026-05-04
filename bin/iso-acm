@@ -7,16 +7,47 @@
 # launcher instead of dropping into admin's shell. acm-shell otherwise
 # behaves identically.
 #
-# Per-environment ACM_API_KEY resolution lives in acm-shell itself
-# (acm_resolve_acm_api_key picks ACM_API_KEY_OP_REF_{PROD,STAGE,DEV}
-# based on ACM_PROMPT_MODE, falling back to ACM_API_KEY_OP_REF).
-# Configure via ~/.acm.env.
+# Multi-deployment ACM_API_KEY: define per-mode 1P references in
+# ~/.acm.env as ACM_API_KEY_OP_REF_{PROD,STAGE,DEV}. iso-acm picks the
+# right one based on the mode positional and exports it as the single
+# ACM_API_KEY_OP_REF that acm-shell reads. Without per-mode refs, acm
+# falls back to whatever ACM_API_KEY / ACM_API_KEY_OP_REF the env has.
 #
 # Usage:
 #   iso-acm <mode> <env_filter> [clickhouse_password] [--k9s]
+# Where <mode> is p/prod/pv1 | s/staging | d/dev/dv1.
 #
 # Without iso, run `acm <args>` directly for the standalone behavior.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export ACM_LAUNCHER="$SCRIPT_DIR/iso-acm-launcher"
+
+# Source ~/.acm.env so per-mode REF variables are available even when
+# iso-acm is invoked from a non-login shell that didn't load it.
+if [ -f "$HOME/.acm.env" ]; then
+    set -a
+    # shellcheck source=/dev/null
+    . "$HOME/.acm.env"
+    set +a
+fi
+
+# Find the first positional non-flag arg and map to a per-mode REF
+# variable name. Then use indirect expansion to copy its value to
+# ACM_API_KEY_OP_REF. Unset ACM_API_KEY so acm-shell re-resolves from
+# the new ref (its acm_resolve_acm_api_key short-circuits otherwise).
+mode_var=""
+for arg in "$@"; do
+    case "$arg" in
+        --*|-*) continue ;;
+        p|prod|pv1) mode_var="ACM_API_KEY_OP_REF_PROD"; break ;;
+        s|staging)  mode_var="ACM_API_KEY_OP_REF_STAGE"; break ;;
+        d|dev|dv1)  mode_var="ACM_API_KEY_OP_REF_DEV"; break ;;
+        *) break ;;
+    esac
+done
+if [ -n "$mode_var" ] && [ -n "${!mode_var:-}" ]; then
+    export ACM_API_KEY_OP_REF="${!mode_var}"
+    unset ACM_API_KEY
+fi
+
 exec /usr/local/acm-shell/bin/acm "$@"
