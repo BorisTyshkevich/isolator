@@ -8,10 +8,40 @@
 # behaves identically.
 #
 # Usage:
-#   iso-acm <deployment> <env_filter> [clickhouse_password] [--k9s]
+#   iso-acm <mode> <env_filter> [clickhouse_password] [--k9s]
+# Where <mode> is p/prod/pv1 | s/staging | d/dev/dv1.
 #
 # Without iso, run `acm <args>` directly for the standalone behavior.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export ACM_LAUNCHER="$SCRIPT_DIR/iso-acm-launcher"
+
+# Point acm-shell at the per-environment 1Password item before it
+# resolves ACM_API_KEY. acm-shell short-circuits if ACM_API_KEY is
+# already set (typically true via ~/.acm.env), so we also unset it to
+# force a re-read from the new reference. Without this the user gets
+# whichever key was baked into ~/.acm.env regardless of which mode
+# they picked. Mode tokens match acm-kube.sh's accepted set.
+for arg in "$@"; do
+    case "$arg" in
+        --*|-*) continue ;;
+        p|prod|pv1)
+            unset ACM_API_KEY
+            export ACM_API_KEY_OP_REF="op://Employee/ACM-prod/credential"
+            break ;;
+        s|staging)
+            unset ACM_API_KEY
+            export ACM_API_KEY_OP_REF="op://Employee/ACM-stage/credential"
+            break ;;
+        d|dev|dv1)
+            unset ACM_API_KEY
+            export ACM_API_KEY_OP_REF="op://Employee/ACM-dev/credential"
+            break ;;
+        *)
+            # Unknown mode (or no positional). Let acm-shell error out
+            # with its usual help text rather than silently picking one.
+            break ;;
+    esac
+done
+
 exec /usr/local/acm-shell/bin/acm "$@"

@@ -27,37 +27,12 @@ ACM_RCFILE_CONTENT="$(sed "s|$KUBECONFIG|$SANDBOX_KUBECONFIG|g" "$ACM_RCFILE")"
 KUBECONFIG_DATA="$(base64 < "$KUBECONFIG")"
 export ACM_RCFILE_CONTENT KUBECONFIG_DATA
 
-# Mode-aware ACM_API_KEY / ACM_API_URL from 1Password. ACM_MODE is set
-# by acm-kube.sh based on the user's mode pick (p/s/d). Each mode maps
-# to an Employee/ACM-<env> API_CREDENTIAL item with fields:
-#   credential — the API key
-#   hostname   — the API base host (e.g. acm.altinity.cloud)
-#
-# Failures are non-fatal: missing item / locked op / absent field all
-# fall back to whatever ACM_API_KEY/ACM_API_URL the env already had
-# (typically iso's resolved [users.<name>.auth] value, i.e. prod). That
-# keeps prod/stage working even if ACM-dev hasn't been created yet.
-case "${ACM_MODE:-}" in
-    p|prod|production)  acm_op_item="ACM-prod"  ;;
-    s|stage|staging)    acm_op_item="ACM-stage" ;;
-    d|dev|development)  acm_op_item="ACM-dev"   ;;
-    *)                  acm_op_item=""          ;;
-esac
-
-if [ -n "$acm_op_item" ]; then
-    if _key="$(op read --no-newline "op://Employee/${acm_op_item}/credential" 2>/dev/null)"; then
-        export ACM_API_KEY="$_key"
-    else
-        echo "iso-acm-launcher: op://Employee/${acm_op_item}/credential not readable — keeping inherited ACM_API_KEY" >&2
-    fi
-    if _host="$(op read --no-newline "op://Employee/${acm_op_item}/hostname" 2>/dev/null)"; then
-        case "$_host" in
-            http://*|https://*) export ACM_API_URL="$_host" ;;
-            *)                  export ACM_API_URL="https://${_host}/api/" ;;
-        esac
-    fi
-    unset _key _host
-fi
+# Per-environment ACM_API_KEY / ACM_API_URL are handled upstream:
+# - iso-acm sets ACM_API_KEY_OP_REF to op://Employee/ACM-{prod,stage,dev}/credential
+#   based on the mode arg, so acm-shell's acm_resolve_acm_api_key reads
+#   the right per-environment item.
+# - acm_api_base_url in acm-shell maps prod/stage/dev to the matching URL.
+# We just preserve the values acm-shell ends up with into the sandbox.
 
 # Comma-list of env vars that flow to the sandbox via iso --preserve-env.
 # Two payload vars (RCFILE_CONTENT, KUBECONFIG_DATA) plus all the
