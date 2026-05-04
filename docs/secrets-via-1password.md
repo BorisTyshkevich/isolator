@@ -66,6 +66,19 @@ The URI format is `op://<vault>/<item>/<field>`. You can copy a
 reference from the 1Password GUI: right-click an item → "Copy Secret
 Reference".
 
+#### Literal values
+
+Anything that isn't an `op://` URI is used as-is. Useful for non-secret
+config alongside the secrets — `iso` doesn't try to interpret it as
+1Password:
+
+```toml
+[users.altinity.auth]
+ACM_API_KEY  = "op://Employee/ACM-prod/credential"
+AUTH0_DOMAIN = "altinity.auth0.com"          # plain string, not a secret
+ACM_API_ENV_ID = "5"
+```
+
 #### Optional entries
 
 Append `?optional` to the URI when the 1P item may legitimately not

@@ -378,13 +378,17 @@ def create_empty_keychain(name):
 def resolve_auth_secrets(user_config):
     """Resolve secrets declared in [users.<name>.auth] to a {var: value} dict.
 
-    Values must be 1Password references in the form
-    `op://vault/item/field`. Resolved via the `op` CLI at session start;
-    returned in-memory. The caller delivers them via process env
+    Values are either 1Password references (`op://vault/item/field`)
+    resolved via the `op` CLI, or literal strings used as-is. Useful
+    for non-secret config (URLs, hostnames, IDs) alongside the secrets:
+        AUTH0_DOMAIN = "altinity.auth0.com"
+        ACM_API_KEY  = "op://Employee/ACM-prod/credential"
+
+    Returned in-memory. The caller delivers them via process env
     (sudo --preserve-env / ssh SendEnv). No `.env` file is written.
 
-    Append `?optional` to the URI to soft-skip if the item or field is
-    missing in 1Password (other failures — op not installed, session
+    Append `?optional` to a 1Password URI to soft-skip if the item or
+    field is missing (other failures — op not installed, session
     expired, network — remain fatal even with ?optional). Useful for
     forward-compatible configs where the 1P item may or may not exist
     yet, e.g.:
@@ -410,11 +414,16 @@ def resolve_auth_secrets(user_config):
 
     resolved = {}
     for var, value_spec in auth.items():
-        if not isinstance(value_spec, str) or not value_spec.startswith("op://"):
-            print(f"FATAL: auth value for {var} must be a 1Password URI "
-                  f"(op://vault/item/field); got {value_spec!r}",
+        if not isinstance(value_spec, str):
+            print(f"FATAL: auth value for {var} must be a string; got {value_spec!r}",
                   file=sys.stderr)
             sys.exit(1)
+        # Literal pass-through: anything that isn't an op:// URI is used
+        # as-is. Useful for non-secret config (URLs, hostnames, IDs) or
+        # for placing values directly without involving 1Password.
+        if not value_spec.startswith("op://"):
+            resolved[var] = value_spec
+            continue
         # `?optional` suffix marks vars that should be silently skipped
         # if the 1P item or field is missing. Other failures (op not
         # installed, session expired, network) remain fatal — opt-in
