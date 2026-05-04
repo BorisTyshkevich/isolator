@@ -8,55 +8,15 @@
 # behaves identically.
 #
 # Multi-deployment ACM_API_KEY: define per-mode 1P references in
-# ~/.acm.env as ACM_API_KEY_OP_REF_{PROD,STAGE,DEV}. iso-acm picks the
-# right one based on the mode positional and exports it as the single
-# ACM_API_KEY_OP_REF that acm-shell reads. Without per-mode refs, acm
-# falls back to whatever ACM_API_KEY / ACM_API_KEY_OP_REF the env has.
+# ~/.acm.env as ACM_API_KEY_OP_REF_{PROD,STAGE,DEV}. acm-kube.sh picks
+# the matching one for the mode positional — works for both `iso-acm`
+# and direct `acm` invocations.
 #
 # Usage:
 #   iso-acm <mode> <env_filter> [clickhouse_password] [--k9s]
-# Where <mode> is p/prod/pv1 | s/staging | d/dev/dv1.
 #
 # Without iso, run `acm <args>` directly for the standalone behavior.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export ACM_LAUNCHER="$SCRIPT_DIR/iso-acm-launcher"
-
-# Source ~/.acm.env so per-mode REF variables are available even when
-# iso-acm is invoked from a non-login shell that didn't load it.
-if [ -f "$HOME/.acm.env" ]; then
-    set -a
-    # shellcheck source=/dev/null
-    . "$HOME/.acm.env"
-    set +a
-fi
-
-# Find the first positional non-flag arg and map to a per-mode REF
-# variable name, then resolve the key with `op` and export ACM_API_KEY
-# directly. Setting ACM_API_KEY (rather than ACM_API_KEY_OP_REF) makes
-# acm_resolve_acm_api_key short-circuit. Necessary because acm-kube.sh
-# re-sources ~/.acm.env at startup (acm_load_default_envs), which would
-# otherwise overwrite an exported ACM_API_KEY_OP_REF with the file's
-# fallback value.
-mode_var=""
-for arg in "$@"; do
-    case "$arg" in
-        --*|-*) continue ;;
-        p|prod|pv1) mode_var="ACM_API_KEY_OP_REF_PROD"; break ;;
-        s|staging)  mode_var="ACM_API_KEY_OP_REF_STAGE"; break ;;
-        d|dev|dv1)  mode_var="ACM_API_KEY_OP_REF_DEV"; break ;;
-        *) break ;;
-    esac
-done
-if [ -n "$mode_var" ] && [ -n "${!mode_var:-}" ]; then
-    if command -v op >/dev/null 2>&1; then
-        if _key="$(op read --no-newline "${!mode_var}" 2>/dev/null)"; then
-            export ACM_API_KEY="$_key"
-        else
-            echo "iso-acm: failed to read ${!mode_var}; falling through to acm-shell's own resolution" >&2
-        fi
-        unset _key
-    fi
-fi
-
 exec /usr/local/acm-shell/bin/acm "$@"
