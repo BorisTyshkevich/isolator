@@ -32,9 +32,12 @@ if [ -f "$HOME/.acm.env" ]; then
 fi
 
 # Find the first positional non-flag arg and map to a per-mode REF
-# variable name. Then use indirect expansion to copy its value to
-# ACM_API_KEY_OP_REF. Unset ACM_API_KEY so acm-shell re-resolves from
-# the new ref (its acm_resolve_acm_api_key short-circuits otherwise).
+# variable name, then resolve the key with `op` and export ACM_API_KEY
+# directly. Setting ACM_API_KEY (rather than ACM_API_KEY_OP_REF) makes
+# acm_resolve_acm_api_key short-circuit. Necessary because acm-kube.sh
+# re-sources ~/.acm.env at startup (acm_load_default_envs), which would
+# otherwise overwrite an exported ACM_API_KEY_OP_REF with the file's
+# fallback value.
 mode_var=""
 for arg in "$@"; do
     case "$arg" in
@@ -46,8 +49,14 @@ for arg in "$@"; do
     esac
 done
 if [ -n "$mode_var" ] && [ -n "${!mode_var:-}" ]; then
-    export ACM_API_KEY_OP_REF="${!mode_var}"
-    unset ACM_API_KEY
+    if command -v op >/dev/null 2>&1; then
+        if _key="$(op read --no-newline "${!mode_var}" 2>/dev/null)"; then
+            export ACM_API_KEY="$_key"
+        else
+            echo "iso-acm: failed to read ${!mode_var}; falling through to acm-shell's own resolution" >&2
+        fi
+        unset _key
+    fi
 fi
 
 exec /usr/local/acm-shell/bin/acm "$@"
