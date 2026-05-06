@@ -45,6 +45,33 @@ DOCKER_PROXY_SOCK="/var/run/isolator-docker/$(whoami).sock"
 if [[ -S "$DOCKER_PROXY_SOCK" ]]; then
     export DOCKER_HOST="unix://$DOCKER_PROXY_SOCK"
 fi
+
+# HTTPS_PROXY — per-user CONNECT proxy on loopback. uid offset matches the
+# scheme in bin/iso (proxy_connect_port): uid 600 -> 18000, uid 606 -> 18006.
+# Set only when the listener is reachable, so a sandbox started before
+# `iso pf` populates the allowlist still has working egress for whatever
+# pf rules cover. Tools that respect HTTPS_PROXY (go, npm, pip, gh, curl,
+# git-https, kubectl, helm, Anthropic/OpenAI SDKs) get hostname-based
+# filtering; raw-TCP tools (ssh, ClickHouse-native) bypass it and rely on
+# pf's per-user IP allowlist instead.
+__iso_uid=$(id -u)
+if (( __iso_uid >= 600 )); then
+    __iso_proxy_port=$((18000 + __iso_uid - 600))
+    if /usr/bin/nc -z 127.0.0.1 "$__iso_proxy_port" 2>/dev/null; then
+        export HTTPS_PROXY="http://127.0.0.1:$__iso_proxy_port"
+        export HTTP_PROXY="$HTTPS_PROXY"
+        # NO_PROXY: loopback + RFC1918. CIDRs are honored by Go's net/http
+        # and most modern HTTP clients; Python requests treats entries as
+        # hostname suffixes so the loopback names there are what matter.
+        export NO_PROXY="localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.169.254"
+        # lowercase aliases for tools that look at one or the other.
+        export https_proxy="$HTTPS_PROXY"
+        export http_proxy="$HTTP_PROXY"
+        export no_proxy="$NO_PROXY"
+    fi
+    unset __iso_proxy_port
+fi
+unset __iso_uid
 # Clean docker config — no OrbStack context
 mkdir -p "$HOME/.docker" 2>/dev/null
 [[ ! -f "$HOME/.docker/config.json" ]] && echo '{}' > "$HOME/.docker/config.json" 2>/dev/null

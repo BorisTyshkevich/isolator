@@ -58,6 +58,7 @@ CLAUDE_MD_PATH = Path("/etc/isolator/CLAUDE.md")
 ANCHOR_PATH = Path("/etc/pf.anchors/isolator")
 PF_CONF = Path("/etc/pf.conf")
 BASE_UID = 600
+PROXY_CONNECT_PORT_BASE = 18000  # uid 600 -> 18000, uid 606 -> 18006
 DOCKER_SUBNET_BASE = "172.30"  # per-user: 172.30.0.0/24, 172.30.1.0/24, ...
 ISOLATOR_GROUP = "isolator"  # dedicated group for sandbox users (NOT staff)
 NETSHOOT_IMAGE = "nicolaka/netshoot"
@@ -769,10 +770,19 @@ def generate_anchor(config):
         if subnets:
             print(f"    subnets: {', '.join(subnets)}")
         print(f"    -> {len(ips)} IPs + {len(subnets)} subnets")
+        # Two tables, by intended port set:
+        #   <name-allowed>: hostname-resolved IPs + subnets, used for non-443
+        #     ports (typically ssh/22, k8s/6443, ClickHouse/9440). Kept so
+        #     ssh-git, native ClickHouse clients, etc. still work without a
+        #     CONNECT-aware proxy.
+        #   <name-subnets>: subnets only, used for port 443 — public HTTPS
+        #     goes through the per-user CONNECT proxy on loopback (covered
+        #     by `pass quick on lo0 all`), which gates by hostname.
         entries = sorted(ips) + subnets
         if entries:
-            ip_list = ", ".join(entries)
-            lines.append(f"table <{name}-allowed> {{ {ip_list} }}")
+            lines.append(f"table <{name}-allowed> {{ {', '.join(entries)} }}")
+        if subnets:
+            lines.append(f"table <{name}-subnets> {{ {', '.join(subnets)} }}")
 
     lines.append("")
 
@@ -816,10 +826,24 @@ def generate_anchor(config):
             continue
         log_kw = "log " if should_log(user_config) else ""
         extra_ports = user_config.get("extra_ports", [])
-        ports = " ".join(str(p) for p in [443] + extra_ports)
-        port_spec = ports if len(extra_ports) == 0 else f"{{ {ports} }}"
-        # macOS pf: user keyword must come after address/port specifiers
-        lines.append(f"pass {log_kw}out proto tcp from any to <{name}-allowed> port {port_spec} user {uid}")
+        has_subnets = bool(user_config.get("subnets", []) + global_subnets)
+        has_allowed = bool(user_config.get("hosts", []) + global_hosts) or has_subnets
+        # Non-443 ports: hostname IPs + subnets. Skip if user declares no
+        # extra_ports (HTTPS-only sandbox, all egress through proxy).
+        if extra_ports and has_allowed:
+            ports = " ".join(str(p) for p in extra_ports)
+            port_spec = ports if len(extra_ports) == 1 else f"{{ {ports} }}"
+            lines.append(
+                f"pass {log_kw}out proto tcp from any to <{name}-allowed> "
+                f"port {port_spec} user {uid}"
+            )
+        # Port 443 to declared subnets only. Public hostnames at :443 are
+        # reached via the loopback CONNECT proxy, not direct.
+        if has_subnets:
+            lines.append(
+                f"pass {log_kw}out proto tcp from any to <{name}-subnets> "
+                f"port 443 user {uid}"
+            )
 
     lines.append("")
     return "\n".join(lines)
@@ -1020,17 +1044,101 @@ def cmd_pf(config, dry_run=False):
         ANCHOR_PATH.parent.mkdir(parents=True, exist_ok=True)
         ANCHOR_PATH.write_text(anchor)
         ensure_pf_conf()
-        print("  Loading pf rules...")
+
+    # Per-user CONNECT proxy allowlist files (and SIGHUP any running proxies).
+    # Run before pfctl reload so a pfctl -f safety bail doesn't abort the
+    # rest of the work; the anchor file is already on disk and will load on
+    # next boot or pf disable/enable cycle.
+    write_proxy_allowlists(config, dry_run)
+
+    if not dry_run:
+        print("\n  Loading pf rules...")
         r = subprocess.run(["pfctl", "-ef", str(PF_CONF)],
                            capture_output=True, text=True)
         if r.returncode != 0:
-            print(f"  ERROR: pfctl failed: {r.stderr}")
-            sys.exit(1)
-        print("  pf rules loaded")
+            # macOS pf refuses `-f` reload when there are existing rules in
+            # the main ruleset; the anchor file was still written and will
+            # apply at next boot. Warn but don't fail the rest of the run.
+            print(f"  WARNING: pfctl reload skipped: {r.stderr.strip()}")
+            print("           Anchor file is on disk; reboot or `sudo pfctl -d && sudo pfctl -e` to apply.")
+        else:
+            print("  pf rules loaded")
 
     # Docker iptables rules
     docker_rules = generate_docker_iptables(config)
     apply_docker_iptables(docker_rules, dry_run)
+
+
+def write_proxy_allowlists(config, dry_run=False):
+    """Write per-user host allowlist files for the CONNECT proxy.
+
+    File format: one hostname per line; "*.example.com" matches subdomains.
+    Path: /var/run/isolator-docker/<user>.hosts (root-owned, mode 0644).
+    Read by docker-proxy at startup and on SIGHUP. Sources are merged from
+    [global.hosts] + [users.<name>.hosts]; secret/auth tables are ignored.
+
+    Sends SIGHUP to any docker-proxy already running so the new allowlist
+    takes effect without restarting the proxy (and with it, the user's
+    Docker socket).
+    """
+    users = config.get("users", {})
+    global_hosts = config.get("global", {}).get("hosts", [])
+    if not users:
+        return
+
+    print("\n  Writing CONNECT proxy allowlists...")
+    if not dry_run:
+        # Ensure DOCKER_PROXY_DIR exists with the same perms as
+        # ensure_docker_proxy uses.
+        if not DOCKER_PROXY_DIR.exists():
+            subprocess.run(["sudo", "mkdir", "-p", str(DOCKER_PROXY_DIR)],
+                           capture_output=True)
+            subprocess.run(["sudo", "chown", "root:wheel", str(DOCKER_PROXY_DIR)],
+                           capture_output=True)
+            subprocess.run(["sudo", "chmod", "711", str(DOCKER_PROXY_DIR)],
+                           capture_output=True)
+
+    for name, user_config in users.items():
+        if is_unrestricted(user_config):
+            continue
+        hosts = sorted(set(user_config.get("hosts", []) + global_hosts))
+        path = DOCKER_PROXY_DIR / f"{name}.hosts"
+        body = (
+            "# Generated by isolator. Do not edit.\n"
+            "# Per-user CONNECT proxy allowlist for HTTPS_PROXY-style egress.\n"
+            f"# Source: [global.hosts] + [users.{name}.hosts] in config.toml\n"
+        ) + "\n".join(hosts) + "\n"
+        print(f"    {path}  ({len(hosts)} hosts)")
+        if dry_run:
+            continue
+        # tee via sudo since the directory is root-owned.
+        r = subprocess.run(["sudo", "tee", str(path)],
+                           input=body.encode(), capture_output=True)
+        if r.returncode != 0:
+            print(f"      WARNING: failed to write: {r.stderr.decode().strip()}")
+            continue
+        subprocess.run(["sudo", "chmod", "0644", str(path)], capture_output=True)
+        subprocess.run(["sudo", "chown", "root:wheel", str(path)], capture_output=True)
+
+    if dry_run:
+        return
+
+    # SIGHUP any docker-proxy already running so it reloads the allowlist
+    # without dropping its Docker socket.
+    for pid_file in sorted(DOCKER_PROXY_DIR.glob("*.pid")):
+        try:
+            r = subprocess.run(["sudo", "cat", str(pid_file)],
+                               capture_output=True, text=True)
+            pid = int(r.stdout.strip())
+        except (ValueError, OSError):
+            continue
+        # Only HUP if the process is actually docker-proxy.
+        ps = subprocess.run(["ps", "-p", str(pid), "-o", "command="],
+                            capture_output=True, text=True)
+        if "docker-proxy" not in ps.stdout:
+            continue
+        subprocess.run(["sudo", "kill", "-HUP", str(pid)], capture_output=True)
+        print(f"    SIGHUP -> {pid_file.stem} (pid {pid})")
 
 
 # ── Run command ─────────────────────────────────────────────────────────────
@@ -1042,6 +1150,17 @@ def proxy_tcp_port(user_config):
     Predictable so the user's profile/env can hardcode it without lookup.
     """
     return 40000 + (user_config["uid"] - BASE_UID)
+
+
+def proxy_connect_port(user_config):
+    """Per-user TCP port for the docker-proxy HTTPS CONNECT listener.
+
+    Loopback-only; pf's `pass quick on lo0 all` rule covers reachability.
+    Same uid-offset scheme as proxy_tcp_port: altinity(606) -> 18006.
+    The sandbox profile exports HTTPS_PROXY=http://127.0.0.1:<this port>
+    so tools that honor HTTPS_PROXY get hostname-based egress filtering.
+    """
+    return PROXY_CONNECT_PORT_BASE + (user_config["uid"] - BASE_UID)
 
 
 def ensure_proxy_tls_certs(user):
@@ -1133,9 +1252,13 @@ def ensure_docker_proxy(user):
     user_cfg = config.get("users", {}).get(user)
     cert_dir = None
     tcp_port = None
+    connect_port = None
+    allowlist_path = DOCKER_PROXY_DIR / f"{user}.hosts"
     if user_cfg and "uid" in user_cfg:
         tcp_port = proxy_tcp_port(user_cfg)
         cert_dir = ensure_proxy_tls_certs(user)
+        if not is_unrestricted(user_cfg):
+            connect_port = proxy_connect_port(user_cfg)
 
     # Start the proxy in a single sudo invocation so the password prompt and
     # the privileged launch share the same tty/ticket context.
@@ -1150,6 +1273,14 @@ def ensure_docker_proxy(user):
             "--tcp-port", str(tcp_port),
             "--tls-cert-dir", shlex.quote(str(cert_dir)),
         ]
+    if connect_port and allowlist_path.exists():
+        proxy_argv += [
+            "--connect-port", str(connect_port),
+            "--connect-allowlist", shlex.quote(str(allowlist_path)),
+        ]
+    elif connect_port and not allowlist_path.exists():
+        print(f"  NOTE: CONNECT proxy disabled — no allowlist at {allowlist_path}.")
+        print("        Run `sudo iso pf` to generate it.")
     proxy_cmd = " ".join(proxy_argv)
     subprocess.run(["sudo", "rm", "-f", str(log_file)], capture_output=True)
     redirect = f" >>{shlex.quote(str(log_file))} 2>&1"

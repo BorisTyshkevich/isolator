@@ -6,6 +6,7 @@ package main
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -58,6 +59,8 @@ func main() {
 		tcpPort            = flag.Int("tcp-port", 0, "Optional TCP port to listen on (loopback only); 0 disables")
 		tlsCertDir         = flag.String("tls-cert-dir", "", "When --tcp-port is set, dir holding ca.pem, server.crt, server.key (server identity) used to verify client certs. Required if --tcp-port > 0 outside --insecure-skip-checks.")
 		initTLS            = flag.Bool("init-tls", false, "Generate a fresh CA + server cert + client cert into --tls-cert-dir and exit. Idempotent: skips generation if files already exist.")
+		connectPort        = flag.Int("connect-port", 0, "Optional TCP port for HTTPS_PROXY-style CONNECT proxy (loopback only); 0 disables")
+		connectAllowlist   = flag.String("connect-allowlist", "", "Path to a hostname allowlist file (one per line). Required when --connect-port is set.")
 	)
 	flag.Parse()
 
@@ -151,10 +154,14 @@ func main() {
 
 	// 10. Signal handler.
 	var once sync.Once
+	var connectListener net.Listener
 	cleanup := func() {
 		once.Do(func() {
 			_ = server.Close()
 			_ = listener.Close()
+			if connectListener != nil {
+				_ = connectListener.Close()
+			}
 			_ = os.Remove(*socketPath)
 		})
 	}
@@ -165,6 +172,56 @@ func main() {
 		cleanup()
 		os.Exit(0)
 	}()
+
+	// CONNECT-proxy listener for HTTPS_PROXY-style outbound filtering.
+	// Loopback-only; pf restricts which uid can reach the port. Allowlist is
+	// hot-reloadable via SIGHUP.
+	if *connectPort > 0 {
+		if *connectAllowlist == "" {
+			fmt.Fprintln(os.Stderr, "FATAL: --connect-port requires --connect-allowlist")
+			cleanup()
+			os.Exit(2)
+		}
+		allow, err := proxy.LoadHostAllowlist(*connectAllowlist)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "FATAL: load allowlist %s: %v\n", *connectAllowlist, err)
+			cleanup()
+			os.Exit(1)
+		}
+		exact, suffix := allow.Size()
+		l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", *connectPort))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "FATAL: CONNECT listen: %v\n", err)
+			cleanup()
+			os.Exit(1)
+		}
+		connectListener = l
+		log.Printf("[%s] connect: 127.0.0.1:%d (allowlist=%s, %d exact + %d suffix)",
+			*username, *connectPort, *connectAllowlist, exact, suffix)
+
+		cp := proxy.NewConnectProxy(*username, allow, log.Default())
+		go func() {
+			if err := cp.Serve(l); err != nil {
+				if !errors.Is(err, net.ErrClosed) {
+					log.Printf("[%s] ERROR: connect.Serve: %v", *username, err)
+				}
+			}
+		}()
+
+		// SIGHUP -> reload allowlist
+		hupCh := make(chan os.Signal, 1)
+		signal.Notify(hupCh, syscall.SIGHUP)
+		go func() {
+			for range hupCh {
+				if err := allow.Reload(); err != nil {
+					log.Printf("[%s] connect: SIGHUP reload failed: %v", *username, err)
+					continue
+				}
+				e, s := allow.Size()
+				log.Printf("[%s] connect: SIGHUP reloaded allowlist (%d exact + %d suffix)", *username, e, s)
+			}
+		}()
+	}
 
 	// Optional: TCP listener for in-container clients (host.docker.internal:PORT).
 	// Requires TLS+mutual auth in production. With --insecure-skip-checks the TCP
