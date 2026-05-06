@@ -115,6 +115,10 @@ func TestConnectProxyDeniedByPort(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", resp.StatusCode)
 	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "no_proxy") {
+		t.Errorf("body = %q, want hint to add to no_proxy", body)
+	}
 }
 
 func TestConnectProxyDeniedByHost(t *testing.T) {
@@ -147,6 +151,21 @@ func TestConnectProxyMethodNotAllowed(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405", resp.StatusCode)
+	}
+}
+
+// Allowlist denial fires before port check: "missing hostname" is the more
+// actionable error — operator either adds the host to allowlist or moves it
+// to no_proxy.
+func TestConnectProxyHostCheckBeforePort(t *testing.T) {
+	addr, stop := startConnectProxy(t, "github.com\n")
+	defer stop()
+
+	// evil.com:6443 — both checks would fail. Expect host-not-in-allowlist.
+	resp := sendCONNECT(t, addr, "evil.com:6443")
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "not in allowlist") {
+		t.Errorf("body = %q, want allowlist message", body)
 	}
 }
 

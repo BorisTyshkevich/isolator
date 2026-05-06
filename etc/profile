@@ -60,14 +60,26 @@ if (( __iso_uid >= 600 )); then
     if /usr/bin/nc -z 127.0.0.1 "$__iso_proxy_port" 2>/dev/null; then
         export HTTPS_PROXY="http://127.0.0.1:$__iso_proxy_port"
         export HTTP_PROXY="$HTTPS_PROXY"
-        # NO_PROXY: loopback + RFC1918. CIDRs are honored by Go's net/http
-        # and most modern HTTP clients; Python requests treats entries as
-        # hostname suffixes so the loopback names there are what matter.
-        export NO_PROXY="localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.169.254"
-        # lowercase aliases for tools that look at one or the other.
+        # NO_PROXY: loopback + RFC1918, plus per-user extras from config.
+        # CIDRs are honored by Go's net/http; Python requests treats entries
+        # as hostname suffixes, so we cover both styles. Per-user extras
+        # come from [users.<name>.no_proxy] (typically internal hostnames
+        # reachable via pf on non-443 ports — k8s API, ClickHouse-native,
+        # billing-on-8443, etc.; HTTPS_PROXY-honoring tools bypass the
+        # proxy for those and go direct).
+        __iso_no_proxy_base="localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.169.254"
+        __iso_no_proxy_extras=""
+        __iso_no_proxy_file="/var/run/isolator-docker/$(whoami).no_proxy"
+        if [[ -r "$__iso_no_proxy_file" ]]; then
+            # File is comma-separated, may contain comment lines starting
+            # with #. Strip comments + blanks before joining.
+            __iso_no_proxy_extras=$(grep -v '^#' "$__iso_no_proxy_file" | tr -d '\n')
+        fi
+        export NO_PROXY="${__iso_no_proxy_base}${__iso_no_proxy_extras:+,${__iso_no_proxy_extras}}"
         export https_proxy="$HTTPS_PROXY"
         export http_proxy="$HTTP_PROXY"
         export no_proxy="$NO_PROXY"
+        unset __iso_no_proxy_base __iso_no_proxy_extras __iso_no_proxy_file
     fi
     unset __iso_proxy_port
 fi

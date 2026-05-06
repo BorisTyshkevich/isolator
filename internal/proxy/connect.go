@@ -95,7 +95,11 @@ func (a *HostAllowlist) Size() (exact, suffix int) {
 }
 
 // ConnectProxy is an HTTP CONNECT-only forward proxy that enforces a host
-// allowlist. Each accepted connection runs in its own goroutine.
+// allowlist. Only TCP/443 and TCP/80 are forwarded — non-HTTPS protocols
+// (ssh, ClickHouse-native, k8s API on 6443, etc.) are expected to bypass
+// HTTPS_PROXY entirely (raw TCP clients ignore it; HTTP-aware tools should
+// have their target host listed in NO_PROXY so they go direct via pf).
+// Each accepted connection runs in its own goroutine.
 type ConnectProxy struct {
 	User      string
 	Allowlist *HostAllowlist
@@ -158,14 +162,17 @@ func (p *ConnectProxy) handle(client net.Conn) {
 		p.deny(client, id, target, http.StatusBadRequest, "bad host:port")
 		return
 	}
-	if port != "443" && port != "80" {
-		p.deny(client, id, target, http.StatusForbidden,
-			"port "+port+" not permitted (only 443, 80)")
-		return
-	}
+	// Host check first: a missing hostname is the more common /
+	// more-actionable failure mode (operator adds it to config.toml or
+	// to no_proxy if the host should bypass the proxy).
 	if !p.Allowlist.Contains(host) {
 		p.deny(client, id, target, http.StatusForbidden,
 			"host "+host+" not in allowlist")
+		return
+	}
+	if port != "443" && port != "80" {
+		p.deny(client, id, target, http.StatusForbidden,
+			"port "+port+" not permitted (proxy handles 443/80; add host to no_proxy for direct access)")
 		return
 	}
 
